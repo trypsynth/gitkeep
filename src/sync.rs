@@ -2,6 +2,7 @@ use std::{collections::HashSet, fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 use octocrab::{Octocrab, OctocrabBuilder, models::Repository};
+use serde::Deserialize;
 
 use crate::config::{Config, State, TrackedUser};
 
@@ -56,9 +57,13 @@ pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 	let to_sync: Vec<&TrackedUser> = config.track.iter().filter(|u| seen.insert(u.name.as_str())).collect();
 	for user in to_sync {
 		println!("Checking {}...", user.name);
-		let use_auth = auth_name.as_deref() == Some(user.name.as_str()) && config.token.is_some();
-		let repos_result =
-			if use_auth { fetch_authenticated(&client).await } else { fetch_public(&client, &user.name).await };
+		let repos_result = if account_is_org(&client, &user.name).await {
+			fetch_org(&client, &user.name).await
+		} else if auth_name.as_deref() == Some(user.name.as_str()) && config.token.is_some() {
+			fetch_authenticated(&client, &user.name).await
+		} else {
+			fetch_public(&client, &user.name).await
+		};
 		match repos_result {
 			Ok(repos) => {
 				let include_forks = force_forks || user.forks;
@@ -147,7 +152,7 @@ fn build_client(config: &Config) -> Result<Octocrab> {
 	}
 }
 
-async fn fetch_authenticated(client: &Octocrab) -> Result<Vec<Repository>> {
+async fn fetch_authenticated(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
 	let page = client
 		.current()
 		.list_repos_for_authenticated_user()
@@ -155,7 +160,33 @@ async fn fetch_authenticated(client: &Octocrab) -> Result<Vec<Repository>> {
 		.send()
 		.await
 		.context("Could not fetch your repositories from GitHub")?;
-	client.all_pages(page).await.context("Could not retrieve all repository pages")
+	let repos = client.all_pages(page).await.context("Could not retrieve all repository pages")?;
+	Ok(repos
+		.into_iter()
+		.filter(|r| r.owner.as_ref().map_or(false, |o| o.login.eq_ignore_ascii_case(username)))
+		.collect())
+}
+
+#[derive(Deserialize)]
+struct AccountInfo {
+	#[serde(rename = "type")]
+	account_type: String,
+}
+
+async fn account_is_org(client: &Octocrab, name: &str) -> bool {
+	let result: Result<AccountInfo, _> = client.get(format!("/users/{name}"), None::<&()>).await;
+	result.map(|info| info.account_type == "Organization").unwrap_or(false)
+}
+
+async fn fetch_org(client: &Octocrab, org: &str) -> Result<Vec<Repository>> {
+	let page = client
+		.orgs(org)
+		.list_repos()
+		.per_page(100u8)
+		.send()
+		.await
+		.with_context(|| format!("Could not fetch repositories for org {org}"))?;
+	client.all_pages(page).await.with_context(|| format!("Could not retrieve all repository pages for org {org}"))
 }
 
 async fn fetch_public(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
