@@ -1,9 +1,8 @@
-use std::io::{self, Write};
-
 use anyhow::{Context, Result, bail};
 use octocrab::OctocrabBuilder;
 
 use crate::config::{Config, TrackedUser};
+use crate::utils::prompt;
 
 const TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=gitkeep";
 
@@ -24,7 +23,7 @@ pub async fn run() -> Result<()> {
 		OctocrabBuilder::default().personal_token(token.clone()).build().context("Could not create GitHub client")?;
 	let user =
 		client.current().user().await.context("Token validation failed. The token may be invalid or expired.")?;
-	println!("Authenticated as {}", user.login);
+	println!("Authenticated as {}.", user.login);
 	let mut config = Config::load()?;
 	config.token = Some(token);
 	if !config.is_tracked(&user.login) {
@@ -32,14 +31,6 @@ pub async fn run() -> Result<()> {
 		println!("Added {} to tracked users.", user.login);
 	}
 	config.save()?;
-	println!("Token saved to {}", Config::path()?.display());
+	println!("Token saved to {}.", Config::path()?.display());
 	Ok(())
-}
-
-fn prompt(message: &str) -> Result<String> {
-	print!("{message}");
-	io::stdout().flush().context("Could not write to stdout")?;
-	let mut buf = String::new();
-	io::stdin().read_line(&mut buf).context("Could not read from stdin")?;
-	Ok(buf)
 }

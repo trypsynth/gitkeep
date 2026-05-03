@@ -2,10 +2,6 @@ use anyhow::Result;
 
 use crate::config::{Config, TrackedUser};
 
-fn plural(n: usize, singular: &str, plural: &str) -> String {
-	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
-}
-
 pub fn add(users: &[String], forks: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
@@ -33,20 +29,19 @@ pub fn add(users: &[String], forks: bool) -> Result<()> {
 
 pub fn remove(users: &[String]) -> Result<()> {
 	let mut config = Config::load()?;
-	let mut removed = 0usize;
+	let mut removed = false;
 	for user in users {
 		let before = config.track.len();
 		config.track.retain(|u| u.name != user.as_str());
 		if config.track.len() < before {
 			println!("Stopped tracking {}.", user);
-			removed += 1;
+			removed = true;
 		} else {
 			println!("Not tracking {}.", user);
 		}
 	}
-	if removed > 0 {
+	if removed {
 		config.save()?;
-		println!("Removed {}.", plural(removed, "user", "users"));
 	}
 	Ok(())
 }

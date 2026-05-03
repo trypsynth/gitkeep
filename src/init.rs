@@ -1,9 +1,8 @@
-use std::io::{self, Write};
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dirs::home_dir;
 
 use crate::config::Config;
+use crate::utils::prompt;
 
 pub fn run() -> Result<()> {
 	let path = Config::path()?;
@@ -38,12 +37,4 @@ pub fn run() -> Result<()> {
 		println!("Tip: Run 'gitkeep login' to authenticate with GitHub.");
 	}
 	Ok(())
-}
-
-fn prompt(message: &str) -> Result<String> {
-	print!("{message}");
-	io::stdout().flush().context("Could not write to stdout")?;
-	let mut buf = String::new();
-	io::stdin().read_line(&mut buf).context("Could not read from stdin")?;
-	Ok(buf)
 }

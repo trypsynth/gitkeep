@@ -5,10 +5,7 @@ use octocrab::{Octocrab, OctocrabBuilder, models::Repository};
 use serde::Deserialize;
 
 use crate::config::{Config, State, TrackedUser};
-
-fn plural(n: usize, singular: &str, plural: &str) -> String {
-	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
-}
+use crate::utils::plural;
 
 #[derive(Default)]
 struct Totals {
@@ -101,19 +98,21 @@ async fn sync_one(
 			let include_forks = force_forks || user.forks;
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-			print!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
+
+			let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
 			if !include_forks && fork_count > 0 {
-				print!(
+				msg.push_str(&format!(
 					" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
 					plural(fork_count, "fork", "forks"),
 					user.name
-				);
+				));
 			}
-			println!();
+			println!("{msg}");
+
 			sync_repo_list(repos, &user.name, include_forks, archive_dir, config, state, totals);
 		}
 		Err(e) => {
-			eprintln!("  Could not fetch repositories for {}: {e:#}", user.name);
+			eprintln!("  Could not fetch repositories for {}: {e:#}.", user.name);
 			totals.failed += 1;
 		}
 	}
@@ -130,7 +129,7 @@ fn sync_repo_list(
 ) {
 	let user_dir = archive_dir.join(username);
 	if let Err(e) = fs::create_dir_all(&user_dir) {
-		eprintln!("  Could not create directory for {username}: {e}");
+		eprintln!("  Could not create directory for {username}: {e}.");
 		totals.failed += repos.len();
 		return;
 	}
@@ -160,7 +159,7 @@ fn sync_repo_list(
 				totals.synced += 1;
 			}
 			Err(e) => {
-				eprintln!("  Failed: {name}: {e:#}");
+				eprintln!("  Failed: {name}: {e:#}.");
 				totals.failed += 1;
 			}
 		}
