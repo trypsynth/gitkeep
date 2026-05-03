@@ -2,8 +2,8 @@ use anyhow::Result;
 
 use crate::config::{Config, TrackedUser};
 
-fn plural(n: usize, word: &str) -> String {
-	if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
+fn plural(n: usize, singular: &str, plural: &str) -> String {
+	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
 }
 
 pub fn add(users: &[String], forks: bool) -> Result<()> {
@@ -46,7 +46,7 @@ pub fn remove(users: &[String]) -> Result<()> {
 	}
 	if removed > 0 {
 		config.save()?;
-		println!("Removed {}.", plural(removed, "user"));
+		println!("Removed {}.", plural(removed, "user", "users"));
 	}
 	Ok(())
 }

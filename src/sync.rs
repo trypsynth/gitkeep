@@ -6,8 +6,8 @@ use serde::Deserialize;
 
 use crate::config::{Config, State, TrackedUser};
 
-fn plural(n: usize, word: &str) -> String {
-	if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
+fn plural(n: usize, singular: &str, plural: &str) -> String {
+	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
 }
 
 #[derive(Default)]
@@ -101,11 +101,11 @@ async fn sync_one(
 			let include_forks = force_forks || user.forks;
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-			print!("Found {} repositories for {}.", visible, user.name);
+			print!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
 			if !include_forks && fork_count > 0 {
 				print!(
 					" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
-					plural(fork_count, "fork"),
+					plural(fork_count, "fork", "forks"),
 					user.name
 				);
 			}
