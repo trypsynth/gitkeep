@@ -92,7 +92,7 @@ async fn sync_one(
 			fetch_public(client, &user.name).await
 		}
 	} else if config.token.is_some() {
-		fetch_authenticated(client, &user.name).await
+		fetch_with_token(client, &user.name).await
 	} else {
 		fetch_public(client, &user.name).await
 	};
@@ -178,6 +178,19 @@ fn build_client(config: &Config) -> Result<Octocrab> {
 			OctocrabBuilder::default().build().context("Could not create GitHub client")
 		}
 	}
+}
+
+async fn fetch_with_token(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
+	let (public, accessible) =
+		tokio::try_join!(fetch_public(client, username), fetch_authenticated(client, username))?;
+	let mut seen = HashSet::new();
+	let mut merged = Vec::with_capacity(public.len() + accessible.len());
+	for repo in public.into_iter().chain(accessible) {
+		if seen.insert(repo.id) {
+			merged.push(repo);
+		}
+	}
+	Ok(merged)
 }
 
 async fn fetch_authenticated(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
