@@ -3,11 +3,13 @@ use std::{collections::HashMap, fs, path::PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use dirs::home_dir;
+use octocrab::{Octocrab, OctocrabBuilder};
 use serde::{Deserialize, Serialize};
 use toml::{from_str, to_string_pretty};
 
-fn is_false(v: &bool) -> bool {
-	!v
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(v: &bool) -> bool {
+	!*v
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -70,6 +72,51 @@ impl Config {
 
 	pub fn is_tracked(&self, name: &str) -> bool {
 		self.track.iter().any(|u| u.name == name)
+	}
+
+	pub fn build_client(&self) -> Result<Octocrab> {
+		self.token.as_ref().map_or_else(
+			|| {
+				println!("Warning: Running in unauthenticated mode. Rate limits will be restricted.");
+				OctocrabBuilder::default().build().context("Could not create GitHub client")
+			},
+			|token| {
+				OctocrabBuilder::default()
+					.personal_token(token.clone())
+					.build()
+					.context("Could not create authenticated GitHub client")
+			},
+		)
+	}
+
+	pub fn add_user(&mut self, user: &str, forks: bool) -> bool {
+		if let Some(entry) = self.track.iter_mut().find(|u| u.name == user) {
+			if forks && !entry.forks {
+				entry.forks = true;
+				println!("Forks enabled for {user}.");
+				true
+			} else {
+				println!("Already tracking {user}.");
+				false
+			}
+		} else {
+			let entry = if forks { TrackedUser::with_forks(user) } else { TrackedUser::new(user) };
+			println!("Now tracking {}{}", user, if forks { " (forks included)" } else { "" });
+			self.track.push(entry);
+			true
+		}
+	}
+
+	pub fn remove_user(&mut self, user: &str) -> bool {
+		let before = self.track.len();
+		self.track.retain(|u| u.name != user);
+		if self.track.len() < before {
+			println!("Stopped tracking {user}.");
+			true
+		} else {
+			println!("Not tracking {user}.");
+			false
+		}
 	}
 }
 

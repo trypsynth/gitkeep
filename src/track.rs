@@ -1,23 +1,12 @@
 use anyhow::Result;
 
-use crate::config::{Config, TrackedUser};
+use crate::config::Config;
 
 pub fn add(users: &[String], forks: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	for user in users {
-		if let Some(entry) = config.track.iter_mut().find(|u| &u.name == user) {
-			if forks && !entry.forks {
-				entry.forks = true;
-				println!("Forks enabled for {user}.");
-				changed = true;
-			} else {
-				println!("Already tracking {user}.");
-			}
-		} else {
-			let entry = if forks { TrackedUser::with_forks(user) } else { TrackedUser::new(user) };
-			println!("Now tracking {}{}", user, if forks { " (forks included)" } else { "" });
-			config.track.push(entry);
+		if config.add_user(user, forks) {
 			changed = true;
 		}
 	}
@@ -29,18 +18,13 @@ pub fn add(users: &[String], forks: bool) -> Result<()> {
 
 pub fn remove(users: &[String]) -> Result<()> {
 	let mut config = Config::load()?;
-	let mut removed = false;
+	let mut changed = false;
 	for user in users {
-		let before = config.track.len();
-		config.track.retain(|u| u.name != user.as_str());
-		if config.track.len() < before {
-			println!("Stopped tracking {user}.");
-			removed = true;
-		} else {
-			println!("Not tracking {user}.");
+		if config.remove_user(user) {
+			changed = true;
 		}
 	}
-	if removed {
+	if changed {
 		config.save()?;
 	}
 	Ok(())
@@ -54,11 +38,8 @@ pub fn list() -> Result<()> {
 	}
 	println!("Tracked users and orgs ({} total):", config.track.len());
 	for user in &config.track {
-		if user.forks {
-			println!("  {} [forks]", user.name);
-		} else {
-			println!("  {}", user.name);
-		}
+		let suffix = if user.forks { " [forks]" } else { "" };
+		println!("  {}{}", user.name, suffix);
 	}
 	Ok(())
 }

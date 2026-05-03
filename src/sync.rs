@@ -1,7 +1,7 @@
-use std::{collections::HashSet, fs, path::Path, process::Command};
+use std::{collections::HashSet, fmt::Write as _, fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
-use octocrab::{Octocrab, OctocrabBuilder, models::Repository};
+use octocrab::{Octocrab, models::Repository};
 use serde::Deserialize;
 
 use crate::{
@@ -18,12 +18,9 @@ struct Totals {
 
 pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
-	let client = build_client(&config)?;
 	let mut updated = false;
 	for user in extra_users {
-		if !config.is_tracked(user) {
-			println!("Adding {user} to tracked users.");
-			config.track.push(TrackedUser::new(user));
+		if config.add_user(user, false) {
 			updated = true;
 		}
 	}
@@ -36,38 +33,32 @@ pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
              or run 'gitkeep login' to authenticate and auto-add your account."
 		);
 	}
-	let archive_dir = config.archive_dir()?;
-	fs::create_dir_all(&archive_dir)
-		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
-	let mut state = State::load()?;
-	let mut totals = Totals::default();
-	let mut seen = HashSet::new();
-	let to_sync: Vec<&TrackedUser> = config.track.iter().filter(|u| seen.insert(u.name.as_str())).collect();
-	for user in to_sync {
-		sync_one(user, force_forks, &client, &archive_dir, &config, &mut state, &mut totals).await;
-	}
-	state.save().context("Could not save sync state")?;
-	println!("Sync complete. {} synced, {} skipped, {} failed.", totals.synced, totals.skipped, totals.failed);
-	Ok(())
+	sync_all(&config, &config.track, force_forks).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
 	let config = Config::load().context("Could not load config")?;
-	let client = build_client(&config)?;
+	let to_sync: Vec<TrackedUser> =
+		config.track.iter().filter(|u| targets.iter().any(|t| t.eq_ignore_ascii_case(&u.name))).cloned().collect();
+	if to_sync.is_empty() {
+		println!("No matching users found to sync.");
+		return Ok(());
+	}
+	sync_all(&config, &to_sync, force_forks).await
+}
+
+async fn sync_all(config: &Config, users: &[TrackedUser], force_forks: bool) -> Result<()> {
+	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
 	fs::create_dir_all(&archive_dir)
 		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
 	let mut state = State::load()?;
 	let mut totals = Totals::default();
 	let mut seen = HashSet::new();
-	let to_sync: Vec<&TrackedUser> = config
-		.track
-		.iter()
-		.filter(|u| targets.iter().any(|t| t.eq_ignore_ascii_case(&u.name)))
-		.filter(|u| seen.insert(u.name.as_str()))
-		.collect();
-	for user in to_sync {
-		sync_one(user, force_forks, &client, &archive_dir, &config, &mut state, &mut totals).await;
+	for user in users {
+		if seen.insert(user.name.as_str()) {
+			sync_one(user, force_forks, &client, &archive_dir, config, &mut state, &mut totals).await;
+		}
 	}
 	state.save().context("Could not save sync state")?;
 	println!("Sync complete. {} synced, {} skipped, {} failed.", totals.synced, totals.skipped, totals.failed);
@@ -100,17 +91,16 @@ async fn sync_one(
 			let include_forks = force_forks || user.forks;
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-
 			let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
 			if !include_forks && fork_count > 0 {
-				msg.push_str(&format!(
+				let _ = write!(
+					msg,
 					" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
 					plural(fork_count, "fork", "forks"),
 					user.name
-				));
+				);
 			}
 			println!("{msg}");
-
 			sync_repo_list(repos, &user.name, include_forks, archive_dir, config, state, totals);
 		}
 		Err(e) => {
@@ -165,18 +155,6 @@ fn sync_repo_list(
 				totals.failed += 1;
 			}
 		}
-	}
-}
-
-fn build_client(config: &Config) -> Result<Octocrab> {
-	if let Some(token) = &config.token {
-		OctocrabBuilder::default()
-			.personal_token(token.clone())
-			.build()
-			.context("Could not create authenticated GitHub client")
-	} else {
-		println!("Warning: Running in unauthenticated mode. Rate limits will be restricted.");
-		OctocrabBuilder::default().build().context("Could not create GitHub client")
 	}
 }
 
