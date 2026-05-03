@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 			}
 			Ok(())
 		}
-		Commands::Remove { users } => track::remove(&users),
+		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
 		Commands::Run { users, forks } => sync::run(&users, forks).await,
 		Commands::Watch { interval } => watch::run(interval).await,

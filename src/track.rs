@@ -1,6 +1,9 @@
+use std::fs;
+
 use anyhow::Result;
 
 use crate::config::Config;
+use crate::utils::confirm;
 
 pub fn add(users: &[String], forks: bool, frozen: bool) -> Result<()> {
 	let mut config = Config::load()?;
@@ -16,12 +19,28 @@ pub fn add(users: &[String], forks: bool, frozen: bool) -> Result<()> {
 	Ok(())
 }
 
-pub fn remove(users: &[String]) -> Result<()> {
+pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
+	let archive_root = config.archive_dir()?;
+
 	for user in users {
 		if config.remove_user(user) {
 			changed = true;
+
+			let user_dir = archive_root.join(user);
+			if user_dir.exists() {
+				let should_delete = if delete_dir {
+					true
+				} else {
+					confirm(&format!("Delete local archive for {user}?"), false)?
+				};
+
+				if should_delete {
+					println!("Deleting {}...", user_dir.display());
+					fs::remove_dir_all(&user_dir)?;
+				}
+			}
 		}
 	}
 	if changed {

@@ -32,6 +32,9 @@ pub enum Commands {
 	Remove {
 		#[arg(value_name = "USERNAME", required = true)]
 		users: Vec<String>,
+		/// Also delete the local archive directory for these users
+		#[arg(short, long)]
+		delete: bool,
 	},
 	/// Show all tracked users and orgs
 	#[command(alias = "ls")]
