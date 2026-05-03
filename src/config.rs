@@ -70,10 +70,6 @@ impl Config {
 		}
 	}
 
-	pub fn is_tracked(&self, name: &str) -> bool {
-		self.track.iter().any(|u| u.name == name)
-	}
-
 	pub fn build_client(&self) -> Result<Octocrab> {
 		self.token.as_ref().map_or_else(
 			|| {
@@ -90,7 +86,7 @@ impl Config {
 	}
 
 	pub fn add_user(&mut self, user: &str, forks: bool) -> bool {
-		if let Some(entry) = self.track.iter_mut().find(|u| u.name == user) {
+		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name == user) {
 			if forks && !entry.forks {
 				entry.forks = true;
 				println!("Forks enabled for {user}.");
@@ -104,7 +100,12 @@ impl Config {
 			println!("Now tracking {}{}", user, if forks { " (forks included)" } else { "" });
 			self.track.push(entry);
 			true
+		};
+
+		if changed {
+			self.sort_users();
 		}
+		changed
 	}
 
 	pub fn remove_user(&mut self, user: &str) -> bool {
@@ -117,6 +118,10 @@ impl Config {
 			println!("Not tracking {user}.");
 			false
 		}
+	}
+
+	pub fn sort_users(&mut self) {
+		self.track.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 	}
 }
 

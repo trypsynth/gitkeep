@@ -2,10 +2,7 @@ use anyhow::{Context, Result};
 use inquire::{Text, validator::Validation};
 use octocrab::OctocrabBuilder;
 
-use crate::{
-	config::{Config, TrackedUser},
-	utils::confirm,
-};
+use crate::{config::Config, utils::confirm};
 
 const TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=gitkeep";
 
@@ -32,10 +29,7 @@ pub async fn run() -> Result<()> {
 	println!("Authenticated as {}.", user.login);
 	let mut config = Config::load()?;
 	config.token = Some(token);
-	if !config.is_tracked(&user.login) {
-		config.track.push(TrackedUser::new(user.login.clone()));
-		println!("Added {} to tracked users.", user.login);
-	}
+	config.add_user(&user.login, false);
 	config.save()?;
 	println!("Token saved to {}.", Config::path()?.display());
 	Ok(())
