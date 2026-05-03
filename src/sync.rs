@@ -20,17 +20,6 @@ struct Totals {
 pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let client = build_client(&config)?;
-	let auth_name: Option<String> = if config.token.is_some() {
-		match client.current().user().await {
-			Ok(user) => Some(user.login),
-			Err(e) => {
-				eprintln!("Warning: Could not verify token ({e}). Using public API for all users.");
-				None
-			}
-		}
-	} else {
-		None
-	};
 	let mut updated = false;
 	for user in extra_users {
 		if !config.is_tracked(user) {
@@ -56,39 +45,78 @@ pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 	let mut seen = HashSet::new();
 	let to_sync: Vec<&TrackedUser> = config.track.iter().filter(|u| seen.insert(u.name.as_str())).collect();
 	for user in to_sync {
-		println!("Checking {}...", user.name);
-		let repos_result = if account_is_org(&client, &user.name).await {
-			fetch_org(&client, &user.name).await
-		} else if auth_name.as_deref() == Some(user.name.as_str()) && config.token.is_some() {
-			fetch_authenticated(&client, &user.name).await
-		} else {
-			fetch_public(&client, &user.name).await
-		};
-		match repos_result {
-			Ok(repos) => {
-				let include_forks = force_forks || user.forks;
-				let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
-				let visible = repos.len() - if include_forks { 0 } else { fork_count };
-				print!("Found {} repositories for {}.", visible, user.name);
-				if !include_forks && fork_count > 0 {
-					print!(
-						" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
-						plural(fork_count, "fork"),
-						user.name
-					);
-				}
-				println!();
-				sync_repo_list(repos, &user.name, include_forks, &archive_dir, &config, &mut state, &mut totals);
-			}
-			Err(e) => {
-				eprintln!("  Could not fetch repositories for {}: {e:#}", user.name);
-				totals.failed += 1;
-			}
-		}
+		sync_one(user, force_forks, &client, &archive_dir, &config, &mut state, &mut totals).await;
 	}
 	state.save().context("Could not save sync state")?;
 	println!("Sync complete. {} synced, {} skipped, {} failed.", totals.synced, totals.skipped, totals.failed);
 	Ok(())
+}
+
+pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
+	let config = Config::load().context("Could not load config")?;
+	let client = build_client(&config)?;
+	let archive_dir = config.archive_dir()?;
+	fs::create_dir_all(&archive_dir)
+		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
+	let mut state = State::load()?;
+	let mut totals = Totals::default();
+	let mut seen = HashSet::new();
+	let to_sync: Vec<&TrackedUser> = config
+		.track
+		.iter()
+		.filter(|u| targets.iter().any(|t| t.eq_ignore_ascii_case(&u.name)))
+		.filter(|u| seen.insert(u.name.as_str()))
+		.collect();
+	for user in to_sync {
+		sync_one(user, force_forks, &client, &archive_dir, &config, &mut state, &mut totals).await;
+	}
+	state.save().context("Could not save sync state")?;
+	println!("Sync complete. {} synced, {} skipped, {} failed.", totals.synced, totals.skipped, totals.failed);
+	Ok(())
+}
+
+async fn sync_one(
+	user: &TrackedUser,
+	force_forks: bool,
+	client: &Octocrab,
+	archive_dir: &Path,
+	config: &Config,
+	state: &mut State,
+	totals: &mut Totals,
+) {
+	println!("Checking {}...", user.name);
+	let repos_result = if account_is_org(client, &user.name).await {
+		if config.token.is_some() {
+			fetch_org(client, &user.name).await
+		} else {
+			fetch_public(client, &user.name).await
+		}
+	} else if config.token.is_some() {
+		fetch_authenticated(client, &user.name).await
+	} else {
+		fetch_public(client, &user.name).await
+	};
+	match repos_result {
+		Ok(repos) => {
+			let include_forks = force_forks || user.forks;
+			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
+			let visible = repos.len() - if include_forks { 0 } else { fork_count };
+			print!("Found {} repositories for {}.", visible, user.name);
+			if !include_forks && fork_count > 0 {
+				print!(
+					" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
+					plural(fork_count, "fork"),
+					user.name
+				);
+			}
+			println!();
+			sync_repo_list(repos, &user.name, include_forks, archive_dir, config, state, totals);
+		}
+		Err(e) => {
+			eprintln!("  Could not fetch repositories for {}: {e:#}", user.name);
+			totals.failed += 1;
+		}
+	}
 }
 
 fn sync_repo_list(

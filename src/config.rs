@@ -1,8 +1,4 @@
-use std::{
-	collections::HashMap,
-	fs,
-	path::PathBuf,
-};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};

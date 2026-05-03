@@ -28,6 +28,9 @@ enum Commands {
 		/// Include forked repositories from these users
 		#[arg(long)]
 		forks: bool,
+		/// Add to the tracked list without cloning right now
+		#[arg(long)]
+		no_sync: bool,
 	},
 	/// Stop tracking one or more users or orgs
 	#[command(alias = "rm")]
@@ -62,7 +65,13 @@ async fn main() -> Result<()> {
 	match cli.command {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
-		Commands::Add { users, forks } => track::add(&users, forks),
+		Commands::Add { users, forks, no_sync } => {
+			track::add(&users, forks)?;
+			if !no_sync {
+				sync::run_for(&users, forks).await?;
+			}
+			Ok(())
+		}
 		Commands::Remove { users } => track::remove(&users),
 		Commands::List => track::list(),
 		Commands::Run { users, forks } => sync::run(&users, forks).await,
