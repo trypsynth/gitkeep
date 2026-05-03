@@ -4,8 +4,10 @@ use anyhow::{Context, Result, bail};
 use octocrab::{Octocrab, OctocrabBuilder, models::Repository};
 use serde::Deserialize;
 
-use crate::config::{Config, State, TrackedUser};
-use crate::utils::plural;
+use crate::{
+	config::{Config, State, TrackedUser},
+	utils::plural,
+};
 
 #[derive(Default)]
 struct Totals {
@@ -180,8 +182,7 @@ fn build_client(config: &Config) -> Result<Octocrab> {
 }
 
 async fn fetch_with_token(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
-	let (public, accessible) =
-		tokio::try_join!(fetch_public(client, username), fetch_authenticated(client, username))?;
+	let (public, accessible) = tokio::try_join!(fetch_public(client, username), fetch_authenticated(client, username))?;
 	let mut seen = HashSet::new();
 	let mut merged = Vec::with_capacity(public.len() + accessible.len());
 	for repo in public.into_iter().chain(accessible) {

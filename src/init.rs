@@ -1,16 +1,15 @@
 use anyhow::Result;
 use dirs::home_dir;
+use inquire::Text;
 
-use crate::config::Config;
-use crate::utils::prompt;
+use crate::{config::Config, utils::confirm};
 
 pub fn run() -> Result<()> {
 	let path = Config::path()?;
 	let existing = Config::load()?;
 	if path.exists() {
 		println!("Config already exists at {}.", path.display());
-		let answer = prompt("Overwrite? [y/N]: ")?;
-		if !answer.trim().eq_ignore_ascii_case("y") {
+		if !confirm("Overwrite?", false)? {
 			println!("Keeping existing config. No changes made.");
 			return Ok(());
 		}
@@ -18,18 +17,11 @@ pub fn run() -> Result<()> {
 	let default_archive = existing.archive_dir.clone().unwrap_or_else(|| {
 		home_dir().map(|h| h.join("gitkeep").to_string_lossy().into_owned()).unwrap_or_else(|| "~/gitkeep".to_string())
 	});
-	let archive_input = prompt(&format!("Archive directory [{}]: ", default_archive))?;
-	let archive_dir = match archive_input.trim() {
-		"" => existing.archive_dir,
-		s => Some(s.to_string()),
-	};
-	let ssh_hint = if existing.use_ssh { "Y/n" } else { "y/N" };
-	let ssh_input = prompt(&format!("Use SSH clone URLs? [{}]: ", ssh_hint))?;
-	let use_ssh = match ssh_input.trim().to_ascii_lowercase().as_str() {
-		"y" | "yes" => true,
-		"n" | "no" => false,
-		_ => existing.use_ssh,
-	};
+	let archive_dir = Text::new("Archive directory")
+		.with_default(&default_archive)
+		.prompt()
+		.map(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })?;
+	let use_ssh = confirm("Use SSH clone URLs?", existing.use_ssh)?;
 	let config = Config { token: existing.token, archive_dir, use_ssh, track: existing.track };
 	config.save()?;
 	println!("Config written to {}.", path.display());
