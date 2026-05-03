@@ -27,15 +27,13 @@ pub struct TrackedUser {
 	pub name: String,
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub forks: bool,
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub frozen: bool,
 }
 
 impl TrackedUser {
-	pub fn new(name: impl Into<String>) -> Self {
-		Self { name: name.into(), forks: false }
-	}
-
-	pub fn with_forks(name: impl Into<String>) -> Self {
-		Self { name: name.into(), forks: true }
+	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
+		Self { name: name.into(), forks, frozen }
 	}
 }
 
@@ -85,19 +83,38 @@ impl Config {
 		)
 	}
 
-	pub fn add_user(&mut self, user: &str, forks: bool) -> bool {
+	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool) -> bool {
 		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name == user) {
-			if forks && !entry.forks {
+			let mut local_changed = if forks && !entry.forks {
 				entry.forks = true;
 				println!("Forks enabled for {user}.");
 				true
 			} else {
-				println!("Already tracking {user}.");
 				false
+			};
+
+			if frozen && !entry.frozen {
+				entry.frozen = true;
+				println!("Account frozen for {user}. Updates will be skipped.");
+				local_changed = true;
+			} else if !frozen && entry.frozen {
+				entry.frozen = false;
+				println!("Account unfrozen for {user}. Updates will be included.");
+				local_changed = true;
 			}
+
+			if !local_changed {
+				println!("Already tracking {user}.");
+			}
+			local_changed
 		} else {
-			let entry = if forks { TrackedUser::with_forks(user) } else { TrackedUser::new(user) };
-			println!("Now tracking {}{}", user, if forks { " (forks included)" } else { "" });
+			let entry = TrackedUser::with_options(user, forks, frozen);
+			println!(
+				"Now tracking {}{}{}",
+				user,
+				if forks { " (forks included)" } else { "" },
+				if frozen { " (frozen)" } else { "" }
+			);
 			self.track.push(entry);
 			true
 		};
@@ -121,7 +138,7 @@ impl Config {
 	}
 
 	pub fn sort_users(&mut self) {
-		self.track.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+		self.track.sort_by_key(|a| a.name.to_lowercase());
 	}
 }
 

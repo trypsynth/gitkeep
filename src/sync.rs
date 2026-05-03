@@ -20,20 +20,28 @@ pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
 	for user in extra_users {
-		if config.add_user(user, false) {
+		if config.add_user(user, false, false) {
 			updated = true;
 		}
 	}
 	if updated {
 		config.save().context("Could not update config")?;
 	}
+
 	if config.track.is_empty() {
 		bail!(
 			"Nothing to sync. Use 'gitkeep add <username>' to start building your library, \
              or run 'gitkeep login' to authenticate and auto-add your account."
 		);
 	}
-	sync_all(&config, &config.track, force_forks).await
+
+	let to_sync: Vec<TrackedUser> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
+	if to_sync.is_empty() {
+		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
+		return Ok(());
+	}
+
+	sync_all(&config, &to_sync, force_forks).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {

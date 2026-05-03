@@ -20,6 +20,9 @@ pub enum Commands {
 		/// Include forked repositories from these users
 		#[arg(long)]
 		forks: bool,
+		/// Do not update these accounts in bulk runs after the initial clone
+		#[arg(long)]
+		frozen: bool,
 		/// Add to the tracked list without cloning right now
 		#[arg(long)]
 		no_sync: bool,

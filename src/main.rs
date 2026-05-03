@@ -20,8 +20,8 @@ async fn main() -> Result<()> {
 	match cli.command {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
-		Commands::Add { users, forks, no_sync } => {
-			track::add(&users, forks)?;
+		Commands::Add { users, forks, frozen, no_sync } => {
+			track::add(&users, forks, frozen)?;
 			if !no_sync {
 				sync::run_for(&users, forks).await?;
 			}

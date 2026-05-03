@@ -2,11 +2,11 @@ use anyhow::Result;
 
 use crate::config::Config;
 
-pub fn add(users: &[String], forks: bool) -> Result<()> {
+pub fn add(users: &[String], forks: bool, frozen: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	for user in users {
-		if config.add_user(user, forks) {
+		if config.add_user(user, forks, frozen) {
 			changed = true;
 		}
 	}
@@ -38,7 +38,14 @@ pub fn list() -> Result<()> {
 	}
 	println!("Tracked users and orgs ({} total):", config.track.len());
 	for user in &config.track {
-		let suffix = if user.forks { " [forks]" } else { "" };
+		let mut tags = Vec::new();
+		if user.forks {
+			tags.push("forks");
+		}
+		if user.frozen {
+			tags.push("frozen");
+		}
+		let suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags.join(", ")) };
 		println!("  {}{}", user.name, suffix);
 	}
 	Ok(())
