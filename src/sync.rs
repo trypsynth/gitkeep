@@ -22,7 +22,7 @@ pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 	let mut updated = false;
 	for user in extra_users {
 		if !config.is_tracked(user) {
-			println!("Adding {} to tracked users.", user);
+			println!("Adding {user} to tracked users.");
 			config.track.push(TrackedUser::new(user));
 			updated = true;
 		}
@@ -143,16 +143,16 @@ fn sync_repo_list(
 			continue;
 		}
 		let Some(url) = clone_url(&repo, config.use_ssh) else {
-			println!("Skipping {} (no clone URL available).", name);
+			println!("Skipping {name} (no clone URL available).");
 			totals.skipped += 1;
 			continue;
 		};
 		let repo_dir = user_dir.join(name.as_str());
 		let result = if repo_dir.exists() {
-			println!("Pulling {}/{}...", username, name);
+			println!("Pulling {username}/{name}...");
 			git_pull(&repo_dir)
 		} else {
-			println!("Cloning {}/{}...", username, name);
+			println!("Cloning {username}/{name}...");
 			git_clone(&url, &repo_dir)
 		};
 		match result {
@@ -169,15 +169,14 @@ fn sync_repo_list(
 }
 
 fn build_client(config: &Config) -> Result<Octocrab> {
-	match &config.token {
-		Some(token) => OctocrabBuilder::default()
+	if let Some(token) = &config.token {
+		OctocrabBuilder::default()
 			.personal_token(token.clone())
 			.build()
-			.context("Could not create authenticated GitHub client"),
-		None => {
-			println!("Warning: Running in unauthenticated mode. Rate limits will be restricted.");
-			OctocrabBuilder::default().build().context("Could not create GitHub client")
-		}
+			.context("Could not create authenticated GitHub client")
+	} else {
+		println!("Warning: Running in unauthenticated mode. Rate limits will be restricted.");
+		OctocrabBuilder::default().build().context("Could not create GitHub client")
 	}
 }
 
@@ -202,10 +201,7 @@ async fn fetch_authenticated(client: &Octocrab, username: &str) -> Result<Vec<Re
 		.await
 		.context("Could not fetch your repositories from GitHub")?;
 	let repos = client.all_pages(page).await.context("Could not retrieve all repository pages")?;
-	Ok(repos
-		.into_iter()
-		.filter(|r| r.owner.as_ref().map_or(false, |o| o.login.eq_ignore_ascii_case(username)))
-		.collect())
+	Ok(repos.into_iter().filter(|r| r.owner.as_ref().is_some_and(|o| o.login.eq_ignore_ascii_case(username))).collect())
 }
 
 #[derive(Deserialize)]
@@ -216,7 +212,7 @@ struct AccountInfo {
 
 async fn account_is_org(client: &Octocrab, name: &str) -> bool {
 	let result: Result<AccountInfo, _> = client.get(format!("/users/{name}"), None::<&()>).await;
-	result.map(|info| info.account_type == "Organization").unwrap_or(false)
+	result.is_ok_and(|info| info.account_type == "Organization")
 }
 
 async fn fetch_org(client: &Octocrab, org: &str) -> Result<Vec<Repository>> {
@@ -242,7 +238,7 @@ async fn fetch_public(client: &Octocrab, username: &str) -> Result<Vec<Repositor
 }
 
 fn clone_url(repo: &Repository, use_ssh: bool) -> Option<String> {
-	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(|u| u.to_string()) }
+	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(std::string::ToString::to_string) }
 }
 
 fn git_clone(url: &str, dest: &Path) -> Result<()> {

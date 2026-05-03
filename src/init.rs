@@ -15,7 +15,7 @@ pub fn run() -> Result<()> {
 		}
 	}
 	let default_archive = existing.archive_dir.clone().unwrap_or_else(|| {
-		home_dir().map(|h| h.join("gitkeep").to_string_lossy().into_owned()).unwrap_or_else(|| "~/gitkeep".to_string())
+		home_dir().map_or_else(|| "~/gitkeep".to_string(), |h| h.join("gitkeep").to_string_lossy().into_owned())
 	});
 	let archive_dir = Text::new("Archive directory")
 		.with_default(&default_archive)

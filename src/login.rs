@@ -10,10 +10,8 @@ use crate::{
 const TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=gitkeep";
 
 pub async fn run() -> Result<()> {
-	if confirm("Open GitHub token settings in browser?", false)? {
-		if open::that(TOKEN_URL).is_err() {
-			println!("Could not open browser. Please visit {TOKEN_URL}.");
-		}
+	if confirm("Open GitHub token settings in browser?", false)? && open::that(TOKEN_URL).is_err() {
+		println!("Could not open browser. Please visit {TOKEN_URL}.");
 	}
 	let token = Text::new("Paste your token:")
 		.with_validator(|s: &str| {

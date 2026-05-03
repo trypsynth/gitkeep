@@ -5,7 +5,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use tokio::time;
 
 pub async fn run(interval_secs: u64) -> Result<()> {
-	println!("Watch mode started. Syncing every {} seconds.", interval_secs);
+	println!("Watch mode started. Syncing every {interval_secs} seconds.");
 	println!("Press Ctrl+C to stop.");
 	loop {
 		if let Err(e) = crate::sync::run(&[], false).await {

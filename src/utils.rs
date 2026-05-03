@@ -26,8 +26,8 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 					continue;
 				}
 				match key.code {
-					KeyCode::Char('y') | KeyCode::Char('Y') => break Ok(true),
-					KeyCode::Char('n') | KeyCode::Char('N') => break Ok(false),
+					KeyCode::Char('y' | 'Y') => break Ok(true),
+					KeyCode::Char('n' | 'N') => break Ok(false),
 					KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
 						break Err(anyhow::anyhow!("Interrupted by user"));
 					}

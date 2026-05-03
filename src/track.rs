@@ -9,10 +9,10 @@ pub fn add(users: &[String], forks: bool) -> Result<()> {
 		if let Some(entry) = config.track.iter_mut().find(|u| &u.name == user) {
 			if forks && !entry.forks {
 				entry.forks = true;
-				println!("Forks enabled for {}.", user);
+				println!("Forks enabled for {user}.");
 				changed = true;
 			} else {
-				println!("Already tracking {}.", user);
+				println!("Already tracking {user}.");
 			}
 		} else {
 			let entry = if forks { TrackedUser::with_forks(user) } else { TrackedUser::new(user) };
@@ -34,10 +34,10 @@ pub fn remove(users: &[String]) -> Result<()> {
 		let before = config.track.len();
 		config.track.retain(|u| u.name != user.as_str());
 		if config.track.len() < before {
-			println!("Stopped tracking {}.", user);
+			println!("Stopped tracking {user}.");
 			removed = true;
 		} else {
-			println!("Not tracking {}.", user);
+			println!("Not tracking {user}.");
 		}
 	}
 	if removed {

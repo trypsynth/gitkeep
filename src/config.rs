@@ -60,12 +60,11 @@ impl Config {
 	}
 
 	pub fn archive_dir(&self) -> Result<PathBuf> {
-		match &self.archive_dir {
-			Some(dir) => Ok(PathBuf::from(dir)),
-			None => {
-				let home = home_dir().context("Could not find your home directory")?;
-				Ok(home.join("gitkeep"))
-			}
+		if let Some(dir) = &self.archive_dir {
+			Ok(PathBuf::from(dir))
+		} else {
+			let home = home_dir().context("Could not find your home directory")?;
+			Ok(home.join("gitkeep"))
 		}
 	}
 
