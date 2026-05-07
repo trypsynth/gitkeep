@@ -16,7 +16,7 @@ struct Totals {
 	failed: usize,
 }
 
-pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
+pub async fn run(extra_users: &[String], force_forks: bool, pull_only: bool, new_only: bool) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
 	for user in extra_users {
@@ -41,7 +41,7 @@ pub async fn run(extra_users: &[String], force_forks: bool) -> Result<()> {
 		return Ok(());
 	}
 
-	sync_all(&config, &to_sync, force_forks).await
+	sync_all(&config, &to_sync, force_forks, pull_only, new_only).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
@@ -52,10 +52,16 @@ pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
 		println!("No matching users found to sync.");
 		return Ok(());
 	}
-	sync_all(&config, &to_sync, force_forks).await
+	sync_all(&config, &to_sync, force_forks, false, false).await
 }
 
-async fn sync_all(config: &Config, users: &[TrackedUser], force_forks: bool) -> Result<()> {
+async fn sync_all(
+	config: &Config,
+	users: &[TrackedUser],
+	force_forks: bool,
+	pull_only: bool,
+	new_only: bool,
+) -> Result<()> {
 	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
 	fs::create_dir_all(&archive_dir)
@@ -65,7 +71,8 @@ async fn sync_all(config: &Config, users: &[TrackedUser], force_forks: bool) -> 
 	let mut seen = HashSet::new();
 	for user in users {
 		if seen.insert(user.name.as_str()) {
-			sync_one(user, force_forks, &client, &archive_dir, config, &mut state, &mut totals).await;
+			sync_one(user, force_forks, pull_only, new_only, &client, &archive_dir, config, &mut state, &mut totals)
+				.await;
 		}
 	}
 	state.save().context("Could not save sync state")?;
@@ -76,6 +83,8 @@ async fn sync_all(config: &Config, users: &[TrackedUser], force_forks: bool) -> 
 async fn sync_one(
 	user: &TrackedUser,
 	force_forks: bool,
+	pull_only: bool,
+	new_only: bool,
 	client: &Octocrab,
 	archive_dir: &Path,
 	config: &Config,
@@ -109,7 +118,7 @@ async fn sync_one(
 				);
 			}
 			println!("{msg}");
-			sync_repo_list(repos, &user.name, include_forks, archive_dir, config, state, totals);
+			sync_repo_list(repos, &user.name, include_forks, pull_only, new_only, archive_dir, config, state, totals);
 		}
 		Err(e) => {
 			eprintln!("  Could not fetch repositories for {}: {e:#}.", user.name);
@@ -122,6 +131,8 @@ fn sync_repo_list(
 	repos: Vec<Repository>,
 	username: &str,
 	include_forks: bool,
+	pull_only: bool,
+	new_only: bool,
 	archive_dir: &Path,
 	config: &Config,
 	state: &mut State,
@@ -146,7 +157,16 @@ fn sync_repo_list(
 			continue;
 		};
 		let repo_dir = user_dir.join(name.as_str());
-		let result = if repo_dir.exists() {
+		let already_cloned = repo_dir.exists();
+		if already_cloned && new_only {
+			totals.skipped += 1;
+			continue;
+		}
+		if !already_cloned && pull_only {
+			totals.skipped += 1;
+			continue;
+		}
+		let result = if already_cloned {
 			println!("Pulling {username}/{name}...");
 			git_pull(&repo_dir)
 		} else {

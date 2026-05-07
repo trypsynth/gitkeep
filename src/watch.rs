@@ -8,7 +8,7 @@ pub async fn run(interval_secs: u64) -> Result<()> {
 	println!("Watch mode started. Syncing every {interval_secs} seconds.");
 	println!("Press Ctrl+C to stop.");
 	loop {
-		if let Err(e) = crate::sync::run(&[], false).await {
+		if let Err(e) = crate::sync::run(&[], false, false, false).await {
 			eprintln!("Sync error: {e:#}.");
 		}
 		let seconds = i64::try_from(interval_secs).unwrap_or(i64::MAX);

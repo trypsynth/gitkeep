@@ -48,6 +48,12 @@ pub enum Commands {
 		/// Include forked repositories for this sync only (does not save to config)
 		#[arg(long)]
 		forks: bool,
+		/// Only pull existing repos; skip checking for new ones
+		#[arg(short = 'p', long)]
+		pull_only: bool,
+		/// Only check for and clone new repos; skip pulling existing ones
+		#[arg(short = 'n', long)]
+		new_only: bool,
 	},
 	/// Daemon mode: sync all tracked users on a schedule
 	Watch {
