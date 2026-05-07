@@ -55,10 +55,4 @@ pub enum Commands {
 		#[arg(short = 'n', long)]
 		new_only: bool,
 	},
-	/// Daemon mode: sync all tracked users on a schedule
-	Watch {
-		/// Seconds between syncs
-		#[arg(short, long, default_value_t = 3600)]
-		interval: u64,
-	},
 }
