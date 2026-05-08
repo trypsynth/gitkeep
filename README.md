@@ -25,7 +25,6 @@ cargo install --path .
 - Track a user: `gitkeep add trypsynth`
 - Sync everything: `gitkeep run`
 - Show tracked list: `gitkeep list`
-- Background sync: `gitkeep watch`
 
 ## Commands
 
@@ -37,7 +36,6 @@ Usage: `gitkeep <COMMAND>`
 - `remove <USERS>` Stop tracking one or more users or orgs
 - `list` (alias: `ls`) Show all tracked users and orgs
 - `run` (alias: `sync`) Sync all tracked users immediately
-- `watch` Daemon mode: sync on a schedule
 
 ## License
 
