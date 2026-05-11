@@ -16,7 +16,7 @@ inquire = "0.9.4"
 octocrab = "0.50.0"
 open = "5.3.4"
 serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.52.2", features = ["full"] }
+tokio = { version = "1.52.3", features = ["full"] }
 toml = "1.1.2"
 
 [profile.release]
