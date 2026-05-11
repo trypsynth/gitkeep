@@ -28,6 +28,8 @@ async fn main() -> Result<()> {
 		}
 		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
-		Commands::Run { users, forks, pull_only, new_only } => sync::run(&users, forks, pull_only, new_only).await,
+		Commands::Run { users, forks, pull_only, new_only, quiet } => {
+			sync::run(&users, forks, pull_only, new_only, quiet).await
+		}
 	}
 }

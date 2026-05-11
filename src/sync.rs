@@ -1,4 +1,10 @@
-use std::{collections::HashSet, fmt::Write as _, fs, path::Path, process::Command};
+use std::{
+	collections::HashSet,
+	fmt::Write as _,
+	fs,
+	path::Path,
+	process::{Command, Stdio},
+};
 
 use anyhow::{Context, Result, bail};
 use octocrab::{Octocrab, models::Repository};
@@ -11,12 +17,20 @@ use crate::{
 
 #[derive(Default)]
 struct Totals {
-	synced: usize,
+	pulled_updated: usize,
+	pulled_up_to_date: usize,
+	cloned: usize,
 	skipped: usize,
 	failed: usize,
 }
 
-pub async fn run(extra_users: &[String], force_forks: bool, pull_only: bool, new_only: bool) -> Result<()> {
+pub async fn run(
+	extra_users: &[String],
+	force_forks: bool,
+	pull_only: bool,
+	new_only: bool,
+	quiet: bool,
+) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
 	for user in extra_users {
@@ -27,21 +41,18 @@ pub async fn run(extra_users: &[String], force_forks: bool, pull_only: bool, new
 	if updated {
 		config.save().context("Could not update config")?;
 	}
-
 	if config.track.is_empty() {
 		bail!(
 			"Nothing to sync. Use 'gitkeep add <username>' to start building your library, \
              or run 'gitkeep login' to authenticate and auto-add your account."
 		);
 	}
-
 	let to_sync: Vec<TrackedUser> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
 	if to_sync.is_empty() {
 		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
 		return Ok(());
 	}
-
-	sync_all(&config, &to_sync, force_forks, pull_only, new_only).await
+	sync_all(&config, &to_sync, force_forks, pull_only, new_only, quiet).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
@@ -52,7 +63,7 @@ pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
 		println!("No matching users found to sync.");
 		return Ok(());
 	}
-	sync_all(&config, &to_sync, force_forks, false, false).await
+	sync_all(&config, &to_sync, force_forks, false, false, false).await
 }
 
 async fn sync_all(
@@ -61,6 +72,7 @@ async fn sync_all(
 	force_forks: bool,
 	pull_only: bool,
 	new_only: bool,
+	quiet: bool,
 ) -> Result<()> {
 	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
@@ -71,13 +83,49 @@ async fn sync_all(
 	let mut seen = HashSet::new();
 	for user in users {
 		if seen.insert(user.name.as_str()) {
-			sync_one(user, force_forks, pull_only, new_only, &client, &archive_dir, config, &mut state, &mut totals)
-				.await;
+			sync_one(
+				user,
+				force_forks,
+				pull_only,
+				new_only,
+				quiet,
+				&client,
+				&archive_dir,
+				config,
+				&mut state,
+				&mut totals,
+			)
+			.await;
 		}
 	}
 	state.save().context("Could not save sync state")?;
-	println!("Sync complete. {} synced, {} skipped, {} failed.", totals.synced, totals.skipped, totals.failed);
+	println!("{}", build_summary(&totals));
 	Ok(())
+}
+
+fn build_summary(totals: &Totals) -> String {
+	let total_processed =
+		totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.failed + totals.skipped;
+	if total_processed == 0 {
+		return "Nothing to do.".to_string();
+	}
+	let mut parts: Vec<String> = Vec::new();
+	if totals.cloned > 0 {
+		parts.push(format!("{} cloned", plural(totals.cloned, "new repo", "new repos")));
+	}
+	if totals.pulled_updated > 0 {
+		parts.push(format!("{} with new commits", plural(totals.pulled_updated, "repo", "repos")));
+	}
+	if totals.pulled_up_to_date > 0 {
+		parts.push(format!("{} up to date", plural(totals.pulled_up_to_date, "repo", "repos")));
+	}
+	if totals.skipped > 0 {
+		parts.push(format!("{} skipped", plural(totals.skipped, "repo", "repos")));
+	}
+	if totals.failed > 0 {
+		parts.push(format!("{} failed", plural(totals.failed, "repo", "repos")));
+	}
+	format!("Done. {}.", parts.join(", "))
 }
 
 async fn sync_one(
@@ -85,13 +133,16 @@ async fn sync_one(
 	force_forks: bool,
 	pull_only: bool,
 	new_only: bool,
+	quiet: bool,
 	client: &Octocrab,
 	archive_dir: &Path,
 	config: &Config,
 	state: &mut State,
 	totals: &mut Totals,
 ) {
-	println!("Checking {}...", user.name);
+	if !quiet {
+		println!("Checking {}...", user.name);
+	}
 	let repos_result = if account_is_org(client, &user.name).await {
 		if config.token.is_some() {
 			fetch_org(client, &user.name).await
@@ -108,17 +159,30 @@ async fn sync_one(
 			let include_forks = force_forks || user.forks;
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-			let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
-			if !include_forks && fork_count > 0 {
-				let _ = write!(
-					msg,
-					" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
-					plural(fork_count, "fork", "forks"),
-					user.name
-				);
+			if !quiet {
+				let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
+				if !include_forks && fork_count > 0 {
+					let _ = write!(
+						msg,
+						" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
+						plural(fork_count, "fork", "forks"),
+						user.name
+					);
+				}
+				println!("{msg}");
 			}
-			println!("{msg}");
-			sync_repo_list(repos, &user.name, include_forks, pull_only, new_only, archive_dir, config, state, totals);
+			sync_repo_list(
+				repos,
+				&user.name,
+				include_forks,
+				pull_only,
+				new_only,
+				quiet,
+				archive_dir,
+				config,
+				state,
+				totals,
+			);
 		}
 		Err(e) => {
 			eprintln!("  Could not fetch repositories for {}: {e:#}.", user.name);
@@ -133,6 +197,7 @@ fn sync_repo_list(
 	include_forks: bool,
 	pull_only: bool,
 	new_only: bool,
+	quiet: bool,
 	archive_dir: &Path,
 	config: &Config,
 	state: &mut State,
@@ -152,7 +217,9 @@ fn sync_repo_list(
 			continue;
 		}
 		let Some(url) = clone_url(&repo, config.use_ssh) else {
-			println!("Skipping {name} (no clone URL available).");
+			if !quiet {
+				println!("Skipping {name} (no clone URL available).");
+			}
 			totals.skipped += 1;
 			continue;
 		};
@@ -166,21 +233,37 @@ fn sync_repo_list(
 			totals.skipped += 1;
 			continue;
 		}
-		let result = if already_cloned {
-			println!("Pulling {username}/{name}...");
-			git_pull(&repo_dir)
-		} else {
-			println!("Cloning {username}/{name}...");
-			git_clone(&url, &repo_dir)
-		};
-		match result {
-			Ok(()) => {
-				state.mark_synced(full_name);
-				totals.synced += 1;
+		if already_cloned {
+			if !quiet {
+				println!("Pulling {username}/{name}...");
 			}
-			Err(e) => {
-				eprintln!("  Failed: {name}: {e:#}.");
-				totals.failed += 1;
+			match git_pull(&repo_dir, quiet) {
+				Ok(had_changes) => {
+					state.mark_synced(full_name);
+					if had_changes {
+						totals.pulled_updated += 1;
+					} else {
+						totals.pulled_up_to_date += 1;
+					}
+				}
+				Err(e) => {
+					eprintln!("  Failed to pull {username}/{name}: {e:#}.");
+					totals.failed += 1;
+				}
+			}
+		} else {
+			if !quiet {
+				println!("Cloning {username}/{name}...");
+			}
+			match git_clone(&url, &repo_dir, quiet) {
+				Ok(()) => {
+					state.mark_synced(full_name);
+					totals.cloned += 1;
+				}
+				Err(e) => {
+					eprintln!("  Failed to clone {username}/{name}: {e:#}.");
+					totals.failed += 1;
+				}
 			}
 		}
 	}
@@ -247,26 +330,61 @@ fn clone_url(repo: &Repository, use_ssh: bool) -> Option<String> {
 	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(std::string::ToString::to_string) }
 }
 
-fn git_clone(url: &str, dest: &Path) -> Result<()> {
-	let status = Command::new("git")
-		.args(["clone", "--", url])
-		.arg(dest)
-		.status()
-		.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
-	if !status.success() {
-		bail!("git clone failed with code {}. Check the URL and your credentials.", status.code().unwrap_or(-1));
-	}
-	Ok(())
+fn git_head(repo_dir: &Path) -> Option<String> {
+	let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo_dir).output().ok()?;
+	if out.status.success() { Some(String::from_utf8_lossy(&out.stdout).trim().to_string()) } else { None }
 }
 
-fn git_pull(repo_dir: &Path) -> Result<()> {
-	let status = Command::new("git")
-		.arg("pull")
-		.current_dir(repo_dir)
-		.status()
-		.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
-	if !status.success() {
-		bail!("git pull failed with code {} in {}.", status.code().unwrap_or(-1), repo_dir.display());
+fn git_pull(repo_dir: &Path, quiet: bool) -> Result<bool> {
+	let head_before = git_head(repo_dir);
+	if quiet {
+		let out = Command::new("git")
+			.arg("pull")
+			.current_dir(repo_dir)
+			.stdout(Stdio::null())
+			.stderr(Stdio::piped())
+			.output()
+			.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
+		if !out.status.success() {
+			eprint!("{}", String::from_utf8_lossy(&out.stderr));
+			bail!("git pull failed with code {}.", out.status.code().unwrap_or(-1));
+		}
+	} else {
+		let status = Command::new("git")
+			.arg("pull")
+			.current_dir(repo_dir)
+			.status()
+			.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
+		if !status.success() {
+			bail!("git pull failed with code {} in {}.", status.code().unwrap_or(-1), repo_dir.display());
+		}
+	}
+	let head_after = git_head(repo_dir);
+	Ok(head_before != head_after)
+}
+
+fn git_clone(url: &str, dest: &Path, quiet: bool) -> Result<()> {
+	if quiet {
+		let out = Command::new("git")
+			.args(["clone", "--", url])
+			.arg(dest)
+			.stdout(Stdio::null())
+			.stderr(Stdio::piped())
+			.output()
+			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
+		if !out.status.success() {
+			eprint!("{}", String::from_utf8_lossy(&out.stderr));
+			bail!("git clone failed with code {}.", out.status.code().unwrap_or(-1));
+		}
+	} else {
+		let status = Command::new("git")
+			.args(["clone", "--", url])
+			.arg(dest)
+			.status()
+			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
+		if !status.success() {
+			bail!("git clone failed with code {}. Check the URL and your credentials.", status.code().unwrap_or(-1));
+		}
 	}
 	Ok(())
 }

@@ -54,5 +54,8 @@ pub enum Commands {
 		/// Only check for and clone new repos; skip pulling existing ones
 		#[arg(short = 'n', long)]
 		new_only: bool,
+		/// Suppress all output except errors and the final summary
+		#[arg(short = 'q', long)]
+		quiet: bool,
 	},
 }
