@@ -15,6 +15,13 @@ use crate::{
 	utils::plural,
 };
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum Verbosity {
+	Quiet,
+	Normal,
+	Verbose,
+}
+
 #[derive(Default)]
 struct Totals {
 	pulled_updated: usize,
@@ -29,7 +36,7 @@ pub async fn run(
 	force_forks: bool,
 	pull_only: bool,
 	new_only: bool,
-	quiet: bool,
+	verbosity: Verbosity,
 ) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
@@ -52,7 +59,7 @@ pub async fn run(
 		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
 		return Ok(());
 	}
-	sync_all(&config, &to_sync, force_forks, pull_only, new_only, quiet).await
+	sync_all(&config, &to_sync, force_forks, pull_only, new_only, verbosity).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
@@ -63,7 +70,7 @@ pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
 		println!("No matching users found to sync.");
 		return Ok(());
 	}
-	sync_all(&config, &to_sync, force_forks, false, false, false).await
+	sync_all(&config, &to_sync, force_forks, false, false, Verbosity::Normal).await
 }
 
 async fn sync_all(
@@ -72,7 +79,7 @@ async fn sync_all(
 	force_forks: bool,
 	pull_only: bool,
 	new_only: bool,
-	quiet: bool,
+	verbosity: Verbosity,
 ) -> Result<()> {
 	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
@@ -88,7 +95,7 @@ async fn sync_all(
 				force_forks,
 				pull_only,
 				new_only,
-				quiet,
+				verbosity,
 				&client,
 				&archive_dir,
 				config,
@@ -133,14 +140,14 @@ async fn sync_one(
 	force_forks: bool,
 	pull_only: bool,
 	new_only: bool,
-	quiet: bool,
+	verbosity: Verbosity,
 	client: &Octocrab,
 	archive_dir: &Path,
 	config: &Config,
 	state: &mut State,
 	totals: &mut Totals,
 ) {
-	if !quiet {
+	if verbosity == Verbosity::Verbose {
 		println!("Checking {}...", user.name);
 	}
 	let repos_result = if account_is_org(client, &user.name).await {
@@ -159,7 +166,7 @@ async fn sync_one(
 			let include_forks = force_forks || user.forks;
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-			if !quiet {
+			if verbosity == Verbosity::Verbose {
 				let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
 				if !include_forks && fork_count > 0 {
 					let _ = write!(
@@ -170,6 +177,12 @@ async fn sync_one(
 					);
 				}
 				println!("{msg}");
+			} else if verbosity == Verbosity::Normal && !include_forks && fork_count > 0 {
+				println!(
+					"Note: skipping {} for {}. Run with --forks to include them.",
+					plural(fork_count, "fork", "forks"),
+					user.name
+				);
 			}
 			sync_repo_list(
 				repos,
@@ -177,7 +190,7 @@ async fn sync_one(
 				include_forks,
 				pull_only,
 				new_only,
-				quiet,
+				verbosity,
 				archive_dir,
 				config,
 				state,
@@ -197,7 +210,7 @@ fn sync_repo_list(
 	include_forks: bool,
 	pull_only: bool,
 	new_only: bool,
-	quiet: bool,
+	verbosity: Verbosity,
 	archive_dir: &Path,
 	config: &Config,
 	state: &mut State,
@@ -217,9 +230,6 @@ fn sync_repo_list(
 			continue;
 		}
 		let Some(url) = clone_url(&repo, config.use_ssh) else {
-			if !quiet {
-				println!("Skipping {name} (no clone URL available).");
-			}
 			totals.skipped += 1;
 			continue;
 		};
@@ -234,12 +244,15 @@ fn sync_repo_list(
 			continue;
 		}
 		if already_cloned {
-			if !quiet {
+			if verbosity == Verbosity::Verbose {
 				println!("Pulling {username}/{name}...");
 			}
-			match git_pull(&repo_dir, quiet) {
+			match git_pull(&repo_dir, verbosity) {
 				Ok(had_changes) => {
 					state.mark_synced(full_name);
+					if verbosity == Verbosity::Normal {
+						println!("  {username}/{name} — {}", if had_changes { "updated" } else { "up to date" });
+					}
 					if had_changes {
 						totals.pulled_updated += 1;
 					} else {
@@ -247,21 +260,32 @@ fn sync_repo_list(
 					}
 				}
 				Err(e) => {
-					eprintln!("  Failed to pull {username}/{name}: {e:#}.");
+					if verbosity == Verbosity::Normal {
+						eprintln!("  {username}/{name} — failed");
+					} else {
+						eprintln!("  Failed to pull {username}/{name}: {e:#}.");
+					}
 					totals.failed += 1;
 				}
 			}
 		} else {
-			if !quiet {
+			if verbosity == Verbosity::Verbose {
 				println!("Cloning {username}/{name}...");
 			}
-			match git_clone(&url, &repo_dir, quiet) {
+			match git_clone(&url, &repo_dir, verbosity) {
 				Ok(()) => {
 					state.mark_synced(full_name);
+					if verbosity == Verbosity::Normal {
+						println!("  {username}/{name} — cloned");
+					}
 					totals.cloned += 1;
 				}
 				Err(e) => {
-					eprintln!("  Failed to clone {username}/{name}: {e:#}.");
+					if verbosity == Verbosity::Normal {
+						eprintln!("  {username}/{name} — failed");
+					} else {
+						eprintln!("  Failed to clone {username}/{name}: {e:#}.");
+					}
 					totals.failed += 1;
 				}
 			}
@@ -335,21 +359,9 @@ fn git_head(repo_dir: &Path) -> Option<String> {
 	if out.status.success() { Some(String::from_utf8_lossy(&out.stdout).trim().to_string()) } else { None }
 }
 
-fn git_pull(repo_dir: &Path, quiet: bool) -> Result<bool> {
+fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> Result<bool> {
 	let head_before = git_head(repo_dir);
-	if quiet {
-		let out = Command::new("git")
-			.arg("pull")
-			.current_dir(repo_dir)
-			.stdout(Stdio::null())
-			.stderr(Stdio::piped())
-			.output()
-			.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
-		if !out.status.success() {
-			eprint!("{}", String::from_utf8_lossy(&out.stderr));
-			bail!("git pull failed with code {}.", out.status.code().unwrap_or(-1));
-		}
-	} else {
+	if verbosity == Verbosity::Verbose {
 		let status = Command::new("git")
 			.arg("pull")
 			.current_dir(repo_dir)
@@ -358,25 +370,24 @@ fn git_pull(repo_dir: &Path, quiet: bool) -> Result<bool> {
 		if !status.success() {
 			bail!("git pull failed with code {} in {}.", status.code().unwrap_or(-1), repo_dir.display());
 		}
+	} else {
+		let out = Command::new("git")
+			.arg("pull")
+			.current_dir(repo_dir)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.output()
+			.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
+		if !out.status.success() {
+			bail!("git pull failed with code {}.", out.status.code().unwrap_or(-1));
+		}
 	}
 	let head_after = git_head(repo_dir);
 	Ok(head_before != head_after)
 }
 
-fn git_clone(url: &str, dest: &Path, quiet: bool) -> Result<()> {
-	if quiet {
-		let out = Command::new("git")
-			.args(["clone", "--", url])
-			.arg(dest)
-			.stdout(Stdio::null())
-			.stderr(Stdio::piped())
-			.output()
-			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
-		if !out.status.success() {
-			eprint!("{}", String::from_utf8_lossy(&out.stderr));
-			bail!("git clone failed with code {}.", out.status.code().unwrap_or(-1));
-		}
-	} else {
+fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {
+	if verbosity == Verbosity::Verbose {
 		let status = Command::new("git")
 			.args(["clone", "--", url])
 			.arg(dest)
@@ -384,6 +395,17 @@ fn git_clone(url: &str, dest: &Path, quiet: bool) -> Result<()> {
 			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
 		if !status.success() {
 			bail!("git clone failed with code {}. Check the URL and your credentials.", status.code().unwrap_or(-1));
+		}
+	} else {
+		let out = Command::new("git")
+			.args(["clone", "--", url])
+			.arg(dest)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.output()
+			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
+		if !out.status.success() {
+			bail!("git clone failed with code {}.", out.status.code().unwrap_or(-1));
 		}
 	}
 	Ok(())

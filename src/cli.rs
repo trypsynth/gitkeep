@@ -57,5 +57,8 @@ pub enum Commands {
 		/// Suppress all output except errors and the final summary
 		#[arg(short = 'q', long)]
 		quiet: bool,
+		/// Show raw git output
+		#[arg(short = 'v', long)]
+		verbose: bool,
 	},
 }

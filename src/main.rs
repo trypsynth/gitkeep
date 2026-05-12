@@ -28,8 +28,15 @@ async fn main() -> Result<()> {
 		}
 		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
-		Commands::Run { users, forks, pull_only, new_only, quiet } => {
-			sync::run(&users, forks, pull_only, new_only, quiet).await
+		Commands::Run { users, forks, pull_only, new_only, quiet, verbose } => {
+			let verbosity = if quiet {
+				sync::Verbosity::Quiet
+			} else if verbose {
+				sync::Verbosity::Verbose
+			} else {
+				sync::Verbosity::Normal
+			};
+			sync::run(&users, forks, pull_only, new_only, verbosity).await
 		}
 	}
 }
