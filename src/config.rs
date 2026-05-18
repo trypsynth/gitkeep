@@ -84,7 +84,14 @@ impl Config {
 	}
 
 	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool) -> bool {
-		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name == user) {
+		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user)) {
+			let canonical_changed = if entry.name != user {
+				entry.name = user.to_string();
+				true
+			} else {
+				false
+			};
+
 			let mut local_changed = if forks && !entry.forks {
 				entry.forks = true;
 				println!("Forks enabled for {user}.");
@@ -103,10 +110,10 @@ impl Config {
 				local_changed = true;
 			}
 
-			if !local_changed {
+			if !local_changed && !canonical_changed {
 				println!("Already tracking {user}.");
 			}
-			local_changed
+			local_changed || canonical_changed
 		} else {
 			let entry = TrackedUser::with_options(user, forks, frozen);
 			println!(
@@ -127,7 +134,7 @@ impl Config {
 
 	pub fn remove_user(&mut self, user: &str) -> bool {
 		let before = self.track.len();
-		self.track.retain(|u| u.name != user);
+		self.track.retain(|u| !u.name.eq_ignore_ascii_case(user));
 		if self.track.len() < before {
 			println!("Stopped tracking {user}.");
 			true

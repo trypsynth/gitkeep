@@ -20,9 +20,19 @@ async fn main() -> Result<()> {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
 		Commands::Add { users, forks, frozen, no_sync } => {
-			track::add(&users, forks, frozen)?;
+			let config = crate::config::Config::load()?;
+			let client = config.build_client()?;
+			let mut resolved = Vec::with_capacity(users.len());
+			for name in &users {
+				let canonical = sync::resolve_login(&client, name).await?;
+				if canonical != *name {
+					println!("Resolved '{name}' to '{canonical}'.");
+				}
+				resolved.push(canonical);
+			}
+			track::add(&resolved, forks, frozen)?;
 			if !no_sync {
-				sync::run_for(&users, forks).await?;
+				sync::run_for(&resolved, forks).await?;
 			}
 			Ok(())
 		}

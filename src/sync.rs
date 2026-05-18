@@ -59,22 +59,22 @@ pub async fn run(
 		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
 		return Ok(());
 	}
-	sync_all(&config, &to_sync, force_forks, pull_only, new_only, verbosity).await
+	sync_all(&mut config, &to_sync, force_forks, pull_only, new_only, verbosity).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
-	let config = Config::load().context("Could not load config")?;
+	let mut config = Config::load().context("Could not load config")?;
 	let to_sync: Vec<TrackedUser> =
 		config.track.iter().filter(|u| targets.iter().any(|t| t.eq_ignore_ascii_case(&u.name))).cloned().collect();
 	if to_sync.is_empty() {
 		println!("No matching users found to sync.");
 		return Ok(());
 	}
-	sync_all(&config, &to_sync, force_forks, false, false, Verbosity::Normal).await
+	sync_all(&mut config, &to_sync, force_forks, false, false, Verbosity::Normal).await
 }
 
 async fn sync_all(
-	config: &Config,
+	config: &mut Config,
 	users: &[TrackedUser],
 	force_forks: bool,
 	pull_only: bool,
@@ -88,9 +88,10 @@ async fn sync_all(
 	let mut state = State::load()?;
 	let mut totals = Totals::default();
 	let mut seen = HashSet::new();
+	let mut config_changed = false;
 	for user in users {
 		if seen.insert(user.name.as_str()) {
-			sync_one(
+			let renamed = sync_one(
 				user,
 				force_forks,
 				pull_only,
@@ -103,9 +104,15 @@ async fn sync_all(
 				&mut totals,
 			)
 			.await;
+			if renamed {
+				config_changed = true;
+			}
 		}
 	}
 	state.save().context("Could not save sync state")?;
+	if config_changed {
+		config.save().context("Could not save config after correcting username casing")?;
+	}
 	println!("{}", build_summary(&totals));
 	Ok(())
 }
@@ -143,23 +150,45 @@ async fn sync_one(
 	verbosity: Verbosity,
 	client: &Octocrab,
 	archive_dir: &Path,
-	config: &Config,
+	config: &mut Config,
 	state: &mut State,
 	totals: &mut Totals,
-) {
+) -> bool {
 	if verbosity == Verbosity::Verbose {
 		println!("Checking {}...", user.name);
 	}
-	let repos_result = if account_is_org(client, &user.name).await {
+	let account = fetch_account(client, &user.name).await;
+	let canonical = account.as_ref().map_or_else(|| user.name.clone(), |a| a.login.clone());
+	let is_org = account.is_some_and(|a| a.account_type == "Organization");
+
+	let mut config_changed = false;
+	if canonical != user.name {
+		let old_dir = archive_dir.join(&user.name);
+		let new_dir = archive_dir.join(&canonical);
+		if old_dir.exists() && !new_dir.exists() {
+			if let Err(e) = fs::rename(&old_dir, &new_dir) {
+				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
+			}
+		}
+		if let Some(entry) = config.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(&user.name)) {
+			if verbosity != Verbosity::Quiet {
+				println!("Corrected username casing: {} → {}", entry.name, canonical);
+			}
+			entry.name = canonical.clone();
+			config_changed = true;
+		}
+	}
+
+	let repos_result = if is_org {
 		if config.token.is_some() {
-			fetch_org(client, &user.name).await
+			fetch_org(client, &canonical).await
 		} else {
-			fetch_public(client, &user.name).await
+			fetch_public(client, &canonical).await
 		}
 	} else if config.token.is_some() {
-		fetch_with_token(client, &user.name).await
+		fetch_with_token(client, &canonical).await
 	} else {
-		fetch_public(client, &user.name).await
+		fetch_public(client, &canonical).await
 	};
 	match repos_result {
 		Ok(repos) => {
@@ -167,13 +196,13 @@ async fn sync_one(
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
 			if verbosity == Verbosity::Verbose {
-				let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), user.name);
+				let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), canonical);
 				if !include_forks && fork_count > 0 {
 					let _ = write!(
 						msg,
 						" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
 						plural(fork_count, "fork", "forks"),
-						user.name
+						canonical
 					);
 				}
 				println!("{msg}");
@@ -181,12 +210,12 @@ async fn sync_one(
 				println!(
 					"Note: skipping {} for {}. Run with --forks to include them.",
 					plural(fork_count, "fork", "forks"),
-					user.name
+					canonical
 				);
 			}
 			sync_repo_list(
 				repos,
-				&user.name,
+				&canonical,
 				include_forks,
 				pull_only,
 				new_only,
@@ -198,10 +227,11 @@ async fn sync_one(
 			);
 		}
 		Err(e) => {
-			eprintln!("  Could not fetch repositories for {}: {e:#}.", user.name);
+			eprintln!("  Could not fetch repositories for {}: {e:#}.", canonical);
 			totals.failed += 1;
 		}
 	}
+	config_changed
 }
 
 fn sync_repo_list(
@@ -319,13 +349,21 @@ async fn fetch_authenticated(client: &Octocrab, username: &str) -> Result<Vec<Re
 
 #[derive(Deserialize)]
 struct AccountInfo {
+	login: String,
 	#[serde(rename = "type")]
 	account_type: String,
 }
 
-async fn account_is_org(client: &Octocrab, name: &str) -> bool {
-	let result: Result<AccountInfo, _> = client.get(format!("/users/{name}"), None::<&()>).await;
-	result.is_ok_and(|info| info.account_type == "Organization")
+async fn fetch_account(client: &Octocrab, name: &str) -> Option<AccountInfo> {
+	client.get(format!("/users/{name}"), None::<&()>).await.ok()
+}
+
+pub async fn resolve_login(client: &Octocrab, name: &str) -> Result<String> {
+	let info: AccountInfo = client
+		.get(format!("/users/{name}"), None::<&()>)
+		.await
+		.with_context(|| format!("Could not find GitHub user '{name}'"))?;
+	Ok(info.login)
 }
 
 async fn fetch_org(client: &Octocrab, org: &str) -> Result<Vec<Repository>> {
