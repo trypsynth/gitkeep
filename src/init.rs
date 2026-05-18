@@ -8,9 +8,9 @@ pub fn run() -> Result<()> {
 	let path = Config::path()?;
 	let existing = Config::load()?;
 	if path.exists() {
-		println!("Config already exists at {}.", path.display());
-		if !confirm("Overwrite?", false)? {
-			println!("Keeping existing config. No changes made.");
+		println!("Config found at {}. Tracked users and your auth token will not be affected.", path.display());
+		if !confirm("Update settings?", false)? {
+			println!("No changes made.");
 			return Ok(());
 		}
 	}

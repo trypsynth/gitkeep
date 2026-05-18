@@ -9,7 +9,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-	/// Create or reset the config file interactively
+	/// Configure the archive directory and clone URL settings
 	Init,
 	/// Authenticate with a GitHub personal access token
 	Login,
