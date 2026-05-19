@@ -28,6 +28,7 @@ struct Totals {
 	pulled_up_to_date: usize,
 	cloned: usize,
 	skipped: usize,
+	ignored: usize,
 	failed: usize,
 }
 
@@ -118,8 +119,12 @@ async fn sync_all(
 }
 
 fn build_summary(totals: &Totals) -> String {
-	let total_processed =
-		totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.failed + totals.skipped;
+	let total_processed = totals.pulled_updated
+		+ totals.pulled_up_to_date
+		+ totals.cloned
+		+ totals.failed
+		+ totals.skipped
+		+ totals.ignored;
 	if total_processed == 0 {
 		return "Nothing to do.".to_string();
 	}
@@ -136,10 +141,40 @@ fn build_summary(totals: &Totals) -> String {
 	if totals.skipped > 0 {
 		parts.push(format!("{} skipped", plural(totals.skipped, "repo", "repos")));
 	}
+	if totals.ignored > 0 {
+		parts.push(format!("{} ignored", plural(totals.ignored, "repo", "repos")));
+	}
 	if totals.failed > 0 {
 		parts.push(format!("{} failed", plural(totals.failed, "repo", "repos")));
 	}
 	format!("Done. {}.", parts.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn totals(ignored: usize) -> Totals {
+		Totals { ignored, ..Totals::default() }
+	}
+
+	#[test]
+	fn summary_shows_ignored_count() {
+		let s = build_summary(&totals(2));
+		assert!(s.contains("2 repos ignored"), "got: {s}");
+	}
+
+	#[test]
+	fn summary_not_nothing_to_do_when_only_ignored() {
+		let s = build_summary(&totals(1));
+		assert_ne!(s, "Nothing to do.");
+	}
+
+	#[test]
+	fn summary_nothing_to_do_when_truly_empty() {
+		let s = build_summary(&Totals::default());
+		assert_eq!(s, "Nothing to do.");
+	}
 }
 
 async fn sync_one(
@@ -255,6 +290,10 @@ fn sync_repo_list(
 	for repo in repos {
 		let name = &repo.name;
 		let full_name = repo.full_name.as_deref().unwrap_or(name.as_str());
+		if state.is_skipped(full_name) {
+			totals.ignored += 1;
+			continue;
+		}
 		if repo.fork.unwrap_or(false) && !include_forks {
 			totals.skipped += 1;
 			continue;
@@ -278,18 +317,48 @@ fn sync_repo_list(
 				println!("Pulling {username}/{name}...");
 			}
 			match git_pull(&repo_dir, verbosity) {
-				Ok(had_changes) => {
+				PullOutcome::Updated => {
 					state.mark_synced(full_name);
 					if verbosity == Verbosity::Normal {
-						println!("  {username}/{name} — {}", if had_changes { "updated" } else { "up to date" });
+						println!("  {username}/{name} — updated");
 					}
-					if had_changes {
-						totals.pulled_updated += 1;
-					} else {
-						totals.pulled_up_to_date += 1;
+					totals.pulled_updated += 1;
+				}
+				PullOutcome::UpToDate => {
+					state.mark_synced(full_name);
+					if verbosity == Verbosity::Normal {
+						println!("  {username}/{name} — up to date");
+					}
+					totals.pulled_up_to_date += 1;
+				}
+				PullOutcome::Fatal => {
+					if verbosity == Verbosity::Verbose {
+						println!("  Pull failed for {username}/{name} (exit 128), re-cloning...");
+					}
+					if let Err(e) = fs::remove_dir_all(&repo_dir) {
+						eprintln!("  Could not remove {}: {e}.", repo_dir.display());
+						totals.failed += 1;
+						continue;
+					}
+					match git_clone(&url, &repo_dir, verbosity) {
+						Ok(()) => {
+							state.mark_synced(full_name);
+							if verbosity == Verbosity::Normal {
+								println!("  {username}/{name} — re-cloned");
+							}
+							totals.cloned += 1;
+						}
+						Err(e) => {
+							if verbosity == Verbosity::Normal {
+								eprintln!("  {username}/{name} — failed");
+							} else {
+								eprintln!("  Failed to re-clone {username}/{name}: {e:#}.");
+							}
+							totals.failed += 1;
+						}
 					}
 				}
-				Err(e) => {
+				PullOutcome::Failed(e) => {
 					if verbosity == Verbosity::Normal {
 						eprintln!("  {username}/{name} — failed");
 					} else {
@@ -397,31 +466,43 @@ fn git_head(repo_dir: &Path) -> Option<String> {
 	if out.status.success() { Some(String::from_utf8_lossy(&out.stdout).trim().to_string()) } else { None }
 }
 
-fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> Result<bool> {
+enum PullOutcome {
+	Updated,
+	UpToDate,
+	Fatal,
+	Failed(anyhow::Error),
+}
+
+fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 	let head_before = git_head(repo_dir);
-	if verbosity == Verbosity::Verbose {
-		let status = Command::new("git")
-			.arg("pull")
-			.current_dir(repo_dir)
-			.status()
-			.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
-		if !status.success() {
-			bail!("git pull failed with code {} in {}.", status.code().unwrap_or(-1), repo_dir.display());
+	let exit_code = if verbosity == Verbosity::Verbose {
+		match Command::new("git").arg("pull").current_dir(repo_dir).status() {
+			Ok(s) => s.code().unwrap_or(-1),
+			Err(e) => {
+				return PullOutcome::Failed(
+					anyhow::Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
+				);
+			}
 		}
 	} else {
-		let out = Command::new("git")
-			.arg("pull")
-			.current_dir(repo_dir)
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.output()
-			.context("Could not run 'git pull'. Is git installed and on your PATH?")?;
-		if !out.status.success() {
-			bail!("git pull failed with code {}.", out.status.code().unwrap_or(-1));
+		match Command::new("git").arg("pull").current_dir(repo_dir).stdout(Stdio::null()).stderr(Stdio::null()).output()
+		{
+			Ok(out) => out.status.code().unwrap_or(-1),
+			Err(e) => {
+				return PullOutcome::Failed(
+					anyhow::Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
+				);
+			}
 		}
+	};
+	if exit_code == 0 {
+		let head_after = git_head(repo_dir);
+		if head_before != head_after { PullOutcome::Updated } else { PullOutcome::UpToDate }
+	} else if exit_code == 128 {
+		PullOutcome::Fatal
+	} else {
+		PullOutcome::Failed(anyhow::anyhow!("git pull failed with code {exit_code}."))
 	}
-	let head_after = git_head(repo_dir);
-	Ok(head_before != head_after)
 }
 
 fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {

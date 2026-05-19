@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod init;
 mod login;
+mod skip;
 mod sync;
 mod track;
 mod utils;
@@ -36,6 +37,8 @@ async fn main() -> Result<()> {
 			}
 			Ok(())
 		}
+		Commands::Skip { repos } => skip::add(&repos),
+		Commands::Unskip { repos } => skip::remove(&repos),
 		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
 		Commands::Run { users, forks, pull_only, new_only, quiet, verbose } => {

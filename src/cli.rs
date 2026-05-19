@@ -27,6 +27,16 @@ pub enum Commands {
 		#[arg(long)]
 		no_sync: bool,
 	},
+	/// Ignore a specific repo during sync (use user/repo format)
+	Skip {
+		#[arg(value_name = "REPO", required = true)]
+		repos: Vec<String>,
+	},
+	/// Stop ignoring a previously skipped repo
+	Unskip {
+		#[arg(value_name = "REPO", required = true)]
+		repos: Vec<String>,
+	},
 	/// Stop tracking one or more users or orgs
 	#[command(alias = "rm")]
 	Remove {

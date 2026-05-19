@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+	collections::{HashMap, HashSet},
+	fs,
+	path::PathBuf,
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -153,6 +157,8 @@ impl Config {
 pub struct State {
 	#[serde(default)]
 	pub repos: HashMap<String, RepoState>,
+	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
+	pub skipped: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,5 +189,59 @@ impl State {
 
 	pub fn mark_synced(&mut self, full_name: &str) {
 		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now() });
+	}
+
+	pub fn skip_repo(&mut self, full_name: &str) {
+		self.skipped.insert(full_name.to_string());
+	}
+
+	pub fn unskip_repo(&mut self, full_name: &str) {
+		self.skipped.remove(full_name);
+	}
+
+	pub fn is_skipped(&self, full_name: &str) -> bool {
+		self.skipped.contains(full_name)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn skip_repo_marks_repo_as_skipped() {
+		let mut state = State::default();
+		state.skip_repo("user/repo");
+		assert!(state.is_skipped("user/repo"));
+	}
+
+	#[test]
+	fn skip_repo_does_not_affect_other_repos() {
+		let mut state = State::default();
+		state.skip_repo("user/repo");
+		assert!(!state.is_skipped("user/other"));
+	}
+
+	#[test]
+	fn unskip_repo_clears_skip() {
+		let mut state = State::default();
+		state.skip_repo("user/repo");
+		state.unskip_repo("user/repo");
+		assert!(!state.is_skipped("user/repo"));
+	}
+
+	#[test]
+	fn is_skipped_false_for_unknown_repo() {
+		let state = State::default();
+		assert!(!state.is_skipped("user/repo"));
+	}
+
+	#[test]
+	fn skip_does_not_clobber_sync_state() {
+		let mut state = State::default();
+		state.mark_synced("user/repo");
+		let synced_at = state.repos["user/repo"].last_synced_at;
+		state.skip_repo("user/repo");
+		assert_eq!(state.repos.get("user/repo").map(|r| r.last_synced_at), Some(synced_at));
 	}
 }
