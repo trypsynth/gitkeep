@@ -154,12 +154,14 @@ impl Config {
 		self.track.sort_by_key(|a| a.name.to_lowercase());
 	}
 
-	pub fn skip_repo(&mut self, full_name: &str) {
-		self.skipped.insert(full_name.to_string());
+	/// Returns `true` if this is a new skip, `false` if already skipped.
+	pub fn skip_repo(&mut self, full_name: &str) -> bool {
+		self.skipped.insert(full_name.to_string())
 	}
 
-	pub fn unskip_repo(&mut self, full_name: &str) {
-		self.skipped.remove(full_name);
+	/// Returns `true` if the repo was skipped and is now removed, `false` if it wasn't skipped.
+	pub fn unskip_repo(&mut self, full_name: &str) -> bool {
+		self.skipped.remove(full_name)
 	}
 
 	pub fn is_skipped(&self, full_name: &str) -> bool {
@@ -219,6 +221,32 @@ mod tests {
 		let mut config = Config::default();
 		config.skip_repo("user/repo");
 		assert!(config.is_skipped("user/repo"));
+	}
+
+	#[test]
+	fn config_skip_repo_returns_true_for_new_skip() {
+		let mut config = Config::default();
+		assert!(config.skip_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_skip_repo_returns_false_for_duplicate() {
+		let mut config = Config::default();
+		config.skip_repo("user/repo");
+		assert!(!config.skip_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_unskip_repo_returns_true_when_was_skipped() {
+		let mut config = Config::default();
+		config.skip_repo("user/repo");
+		assert!(config.unskip_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_unskip_repo_returns_false_when_not_skipped() {
+		let mut config = Config::default();
+		assert!(!config.unskip_repo("user/repo"));
 	}
 
 	#[test]

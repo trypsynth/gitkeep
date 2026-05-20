@@ -28,8 +28,11 @@ pub async fn add(repos: &[String]) -> Result<()> {
 			let canonical_user =
 				config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map_or(user, |u| u.name.as_str());
 			let key = format!("{canonical_user}/{name}");
-			config.skip_repo(&key);
-			println!("Ignoring {key}.");
+			if config.skip_repo(&key) {
+				println!("Ignoring {key}.");
+			} else {
+				println!("Already ignoring {key}. Run 'gitkeep unskip {key}' to stop.");
+			}
 			continue;
 		}
 
@@ -47,8 +50,11 @@ pub async fn add(repos: &[String]) -> Result<()> {
 			Err(_) => bail!("'{repo_str}' does not exist on GitHub."),
 		};
 
-		config.skip_repo(&full_name);
-		println!("Ignoring {full_name}.");
+		if config.skip_repo(&full_name) {
+			println!("Ignoring {full_name}.");
+		} else {
+			println!("Already ignoring {full_name}. Run 'gitkeep unskip {full_name}' to stop.");
+		}
 	}
 
 	config.save()
@@ -57,8 +63,11 @@ pub async fn add(repos: &[String]) -> Result<()> {
 pub fn remove(repos: &[String]) -> Result<()> {
 	let mut config = Config::load()?;
 	for repo in repos {
-		config.unskip_repo(repo);
-		println!("No longer ignoring {repo}.");
+		if config.unskip_repo(repo) {
+			println!("No longer ignoring {repo}.");
+		} else {
+			println!("'{repo}' is not being ignored.");
+		}
 	}
 	config.save()
 }
