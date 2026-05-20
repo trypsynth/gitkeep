@@ -60,14 +60,20 @@ pub async fn add(repos: &[String]) -> Result<()> {
 	config.save()
 }
 
+fn unskip_one(config: &mut Config, repo: &str) -> Result<()> {
+	parse_repo_arg(repo)?;
+	if config.unskip_repo(repo) {
+		println!("No longer ignoring {repo}.");
+	} else {
+		println!("'{repo}' is not being ignored.");
+	}
+	Ok(())
+}
+
 pub fn remove(repos: &[String]) -> Result<()> {
 	let mut config = Config::load()?;
 	for repo in repos {
-		if config.unskip_repo(repo) {
-			println!("No longer ignoring {repo}.");
-		} else {
-			println!("'{repo}' is not being ignored.");
-		}
+		unskip_one(&mut config, repo)?;
 	}
 	config.save()
 }
@@ -101,5 +107,26 @@ mod tests {
 	#[test]
 	fn parse_repo_arg_rejects_empty_repo() {
 		assert!(parse_repo_arg("user/").is_err());
+	}
+
+	#[test]
+	fn unskip_one_rejects_bad_format() {
+		let mut config = Config::default();
+		assert!(unskip_one(&mut config, "noslash").is_err());
+	}
+
+	#[test]
+	fn unskip_one_prints_not_ignored_when_not_skipped() {
+		let mut config = Config::default();
+		// should succeed (not error) even if not currently skipped
+		assert!(unskip_one(&mut config, "user/repo").is_ok());
+	}
+
+	#[test]
+	fn unskip_one_removes_existing_skip() {
+		let mut config = Config::default();
+		config.skip_repo("user/repo");
+		unskip_one(&mut config, "user/repo").unwrap();
+		assert!(!config.is_skipped("user/repo"));
 	}
 }

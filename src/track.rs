@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fmt::Write as _, fs};
 
 use anyhow::Result;
 
@@ -50,7 +50,7 @@ fn format_list(config: &Config) -> String {
 	if config.track.is_empty() {
 		return "No users tracked. Use 'gitkeep add <username>' to start.\n".to_string();
 	}
-	out.push_str(&format!("Tracked users and orgs ({} total):\n", config.track.len()));
+	let _ = writeln!(out, "Tracked users and orgs ({} total):", config.track.len());
 	for user in &config.track {
 		let mut tags = Vec::new();
 		if user.forks {
@@ -60,14 +60,14 @@ fn format_list(config: &Config) -> String {
 			tags.push("frozen");
 		}
 		let suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags.join(", ")) };
-		out.push_str(&format!("  {}{}\n", user.name, suffix));
+		let _ = writeln!(out, "  {}{}", user.name, suffix);
 	}
 	if !config.skipped.is_empty() {
 		let mut sorted: Vec<&String> = config.skipped.iter().collect();
 		sorted.sort();
-		out.push_str(&format!("\nSkipped repos ({} total):\n", sorted.len()));
+		let _ = writeln!(out, "\nSkipped repos ({} total):", sorted.len());
 		for repo in sorted {
-			out.push_str(&format!("  {repo}\n"));
+			let _ = writeln!(out, "  {repo}");
 		}
 	}
 	out

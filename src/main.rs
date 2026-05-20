@@ -1,4 +1,5 @@
 #![warn(clippy::all, clippy::cargo, clippy::nursery, clippy::pedantic)]
+#![allow(clippy::multiple_crate_versions)]
 
 use anyhow::Result;
 use clap::Parser;

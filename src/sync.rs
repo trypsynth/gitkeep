@@ -170,7 +170,7 @@ fn build_normal_detail(totals: &Totals) -> Option<String> {
 	if !totals.new_repos.is_empty() {
 		out.push_str("Cloned:\n");
 		for r in &totals.new_repos {
-			out.push_str(&format!("  {r}\n"));
+			let _ = writeln!(out, "  {r}");
 		}
 	}
 	if !totals.updated_repos.is_empty() {
@@ -179,7 +179,7 @@ fn build_normal_detail(totals: &Totals) -> Option<String> {
 		}
 		out.push_str("Updated:\n");
 		for r in &totals.updated_repos {
-			out.push_str(&format!("  {r}\n"));
+			let _ = writeln!(out, "  {r}");
 		}
 	}
 	Some(out.trim_end().to_string())
@@ -255,6 +255,7 @@ mod tests {
 	}
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sync_one(
 	user: &TrackedUser,
 	force_forks: bool,
@@ -288,7 +289,7 @@ async fn sync_one(
 			if verbosity != Verbosity::Quiet {
 				println!("Corrected username casing: {} → {}", entry.name, canonical);
 			}
-			entry.name = canonical.clone();
+			entry.name.clone_from(&canonical);
 			config_changed = true;
 		}
 	}
@@ -342,6 +343,7 @@ async fn sync_one(
 	config_changed
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_repo_list(
 	repos: Vec<Repository>,
 	username: &str,
