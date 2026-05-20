@@ -24,6 +24,8 @@ pub struct Config {
 	pub use_ssh: bool,
 	#[serde(default)]
 	pub track: Vec<TrackedUser>,
+	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
+	pub skipped: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,13 +153,25 @@ impl Config {
 	pub fn sort_users(&mut self) {
 		self.track.sort_by_key(|a| a.name.to_lowercase());
 	}
+
+	pub fn skip_repo(&mut self, full_name: &str) {
+		self.skipped.insert(full_name.to_string());
+	}
+
+	pub fn unskip_repo(&mut self, full_name: &str) {
+		self.skipped.remove(full_name);
+	}
+
+	pub fn is_skipped(&self, full_name: &str) -> bool {
+		self.skipped.contains(full_name)
+	}
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
 	#[serde(default)]
 	pub repos: HashMap<String, RepoState>,
-	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
+	#[serde(default, skip_serializing)]
 	pub skipped: HashSet<String>,
 }
 
@@ -191,16 +205,8 @@ impl State {
 		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now() });
 	}
 
-	pub fn skip_repo(&mut self, full_name: &str) {
-		self.skipped.insert(full_name.to_string());
-	}
-
-	pub fn unskip_repo(&mut self, full_name: &str) {
-		self.skipped.remove(full_name);
-	}
-
-	pub fn is_skipped(&self, full_name: &str) -> bool {
-		self.skipped.contains(full_name)
+	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
+		std::mem::take(&mut self.skipped)
 	}
 }
 
@@ -209,39 +215,46 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn skip_repo_marks_repo_as_skipped() {
-		let mut state = State::default();
-		state.skip_repo("user/repo");
-		assert!(state.is_skipped("user/repo"));
+	fn config_skip_repo_marks_as_skipped() {
+		let mut config = Config::default();
+		config.skip_repo("user/repo");
+		assert!(config.is_skipped("user/repo"));
 	}
 
 	#[test]
-	fn skip_repo_does_not_affect_other_repos() {
-		let mut state = State::default();
-		state.skip_repo("user/repo");
-		assert!(!state.is_skipped("user/other"));
+	fn config_skip_repo_does_not_affect_other_repos() {
+		let mut config = Config::default();
+		config.skip_repo("user/repo");
+		assert!(!config.is_skipped("user/other"));
 	}
 
 	#[test]
-	fn unskip_repo_clears_skip() {
-		let mut state = State::default();
-		state.skip_repo("user/repo");
-		state.unskip_repo("user/repo");
-		assert!(!state.is_skipped("user/repo"));
+	fn config_unskip_repo_clears_skip() {
+		let mut config = Config::default();
+		config.skip_repo("user/repo");
+		config.unskip_repo("user/repo");
+		assert!(!config.is_skipped("user/repo"));
 	}
 
 	#[test]
-	fn is_skipped_false_for_unknown_repo() {
-		let state = State::default();
-		assert!(!state.is_skipped("user/repo"));
+	fn config_is_skipped_false_for_unknown() {
+		let config = Config::default();
+		assert!(!config.is_skipped("user/repo"));
 	}
 
 	#[test]
-	fn skip_does_not_clobber_sync_state() {
+	fn state_drain_legacy_skipped_moves_entries() {
 		let mut state = State::default();
-		state.mark_synced("user/repo");
-		let synced_at = state.repos["user/repo"].last_synced_at;
-		state.skip_repo("user/repo");
-		assert_eq!(state.repos.get("user/repo").map(|r| r.last_synced_at), Some(synced_at));
+		state.skipped.insert("user/repo".to_string());
+		let drained = state.drain_legacy_skipped();
+		assert!(drained.contains("user/repo"));
+	}
+
+	#[test]
+	fn state_drain_legacy_skipped_empties_state() {
+		let mut state = State::default();
+		state.skipped.insert("user/repo".to_string());
+		state.drain_legacy_skipped();
+		assert!(state.skipped.is_empty());
 	}
 }

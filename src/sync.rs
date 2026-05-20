@@ -87,6 +87,10 @@ async fn sync_all(
 	fs::create_dir_all(&archive_dir)
 		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
 	let mut state = State::load()?;
+	let legacy = state.drain_legacy_skipped();
+	if !legacy.is_empty() {
+		config.skipped.extend(legacy);
+	}
 	let mut totals = Totals::default();
 	let mut seen = HashSet::new();
 	let mut config_changed = false;
@@ -290,7 +294,7 @@ fn sync_repo_list(
 	for repo in repos {
 		let name = &repo.name;
 		let full_name = repo.full_name.as_deref().unwrap_or(name.as_str());
-		if state.is_skipped(full_name) {
+		if config.is_skipped(full_name) {
 			totals.ignored += 1;
 			continue;
 		}

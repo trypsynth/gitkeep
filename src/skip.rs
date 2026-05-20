@@ -1,21 +1,96 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-use crate::config::State;
+use crate::config::Config;
 
-pub fn add(repos: &[String]) -> Result<()> {
-	let mut state = State::load()?;
-	for repo in repos {
-		state.skip_repo(repo);
-		println!("Ignoring {repo}.");
+fn parse_repo_arg(s: &str) -> Result<(&str, &str)> {
+	let Some((user, rest)) = s.split_once('/') else {
+		bail!("'{s}' is not in user/repo format");
+	};
+	if user.is_empty() {
+		bail!("'{s}' is not in user/repo format");
 	}
-	state.save()
+	if rest.is_empty() || rest.contains('/') {
+		bail!("'{s}' is not in user/repo format");
+	}
+	Ok((user, rest))
+}
+
+pub async fn add(repos: &[String]) -> Result<()> {
+	let mut config = Config::load()?;
+	let client = config.build_client()?;
+	let archive_dir = config.archive_dir()?;
+
+	for repo_str in repos {
+		let (user, name) = parse_repo_arg(repo_str)?;
+
+		let local_path = archive_dir.join(user).join(name);
+		if local_path.exists() {
+			let canonical_user =
+				config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map_or(user, |u| u.name.as_str());
+			let key = format!("{canonical_user}/{name}");
+			config.skip_repo(&key);
+			println!("Ignoring {key}.");
+			continue;
+		}
+
+		let user_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(user));
+		if !user_tracked {
+			bail!(
+				"'{repo_str}' won't be synced: '{user}' is not in your tracked list. \
+				 Run 'gitkeep add {user}' first."
+			);
+		}
+
+		let github_repo = client.repos(user, name).get().await;
+		let full_name = match github_repo {
+			Ok(r) => r.full_name.unwrap_or_else(|| repo_str.clone()),
+			Err(_) => bail!("'{repo_str}' does not exist on GitHub."),
+		};
+
+		config.skip_repo(&full_name);
+		println!("Ignoring {full_name}.");
+	}
+
+	config.save()
 }
 
 pub fn remove(repos: &[String]) -> Result<()> {
-	let mut state = State::load()?;
+	let mut config = Config::load()?;
 	for repo in repos {
-		state.unskip_repo(repo);
+		config.unskip_repo(repo);
 		println!("No longer ignoring {repo}.");
 	}
-	state.save()
+	config.save()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn parse_repo_arg_valid() {
+		let (user, name) = parse_repo_arg("alice/my-repo").unwrap();
+		assert_eq!(user, "alice");
+		assert_eq!(name, "my-repo");
+	}
+
+	#[test]
+	fn parse_repo_arg_rejects_no_slash() {
+		assert!(parse_repo_arg("noslash").is_err());
+	}
+
+	#[test]
+	fn parse_repo_arg_rejects_two_slashes() {
+		assert!(parse_repo_arg("a/b/c").is_err());
+	}
+
+	#[test]
+	fn parse_repo_arg_rejects_empty_user() {
+		assert!(parse_repo_arg("/repo").is_err());
+	}
+
+	#[test]
+	fn parse_repo_arg_rejects_empty_repo() {
+		assert!(parse_repo_arg("user/").is_err());
+	}
 }

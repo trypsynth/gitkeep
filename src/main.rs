@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
 			}
 			Ok(())
 		}
-		Commands::Skip { repos } => skip::add(&repos),
+		Commands::Skip { repos } => skip::add(&repos).await,
 		Commands::Unskip { repos } => skip::remove(&repos),
 		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
