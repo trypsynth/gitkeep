@@ -15,7 +15,7 @@ use crate::{
 	utils::plural,
 };
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Verbosity {
 	Quiet,
 	Normal,
@@ -120,11 +120,11 @@ async fn sync_all(
 	if config_changed {
 		config.save().context("Could not save config after correcting username casing")?;
 	}
-	if verbosity == Verbosity::Normal {
-		if let Some(detail) = build_normal_detail(&totals) {
-			println!("{detail}");
-			println!();
-		}
+	if verbosity == Verbosity::Normal
+		&& let Some(detail) = build_normal_detail(&totals)
+	{
+		println!("{detail}");
+		println!();
 	}
 	println!("{}", build_summary(&totals));
 	Ok(())
@@ -278,10 +278,11 @@ async fn sync_one(
 	if canonical != user.name {
 		let old_dir = archive_dir.join(&user.name);
 		let new_dir = archive_dir.join(&canonical);
-		if old_dir.exists() && !new_dir.exists() {
-			if let Err(e) = fs::rename(&old_dir, &new_dir) {
-				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
-			}
+		if old_dir.exists()
+			&& !new_dir.exists()
+			&& let Err(e) = fs::rename(&old_dir, &new_dir)
+		{
+			eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
 		}
 		if let Some(entry) = config.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(&user.name)) {
 			if verbosity != Verbosity::Quiet {
@@ -334,7 +335,7 @@ async fn sync_one(
 			);
 		}
 		Err(e) => {
-			eprintln!("  Could not fetch repositories for {}: {e:#}.", canonical);
+			eprintln!("  Could not fetch repositories for {canonical}: {e:#}.");
 			totals.failed += 1;
 		}
 	}
@@ -554,7 +555,7 @@ fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 	};
 	if exit_code == 0 {
 		let head_after = git_head(repo_dir);
-		if head_before != head_after { PullOutcome::Updated } else { PullOutcome::UpToDate }
+		if head_before == head_after { PullOutcome::UpToDate } else { PullOutcome::Updated }
 	} else if exit_code == 128 {
 		PullOutcome::Fatal
 	} else {

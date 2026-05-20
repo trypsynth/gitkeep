@@ -91,11 +91,11 @@ impl Config {
 
 	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool) -> bool {
 		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user)) {
-			let canonical_changed = if entry.name != user {
+			let canonical_changed = if entry.name == user {
+				false
+			} else {
 				entry.name = user.to_string();
 				true
-			} else {
-				false
 			};
 
 			let mut local_changed = if forks && !entry.forks {
