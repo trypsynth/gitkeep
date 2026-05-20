@@ -45,13 +45,12 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 	Ok(())
 }
 
-pub fn list() -> Result<()> {
-	let config = Config::load()?;
+fn format_list(config: &Config) -> String {
+	let mut out = String::new();
 	if config.track.is_empty() {
-		println!("No users tracked. Use 'gitkeep add <username>' to start.");
-		return Ok(());
+		return "No users tracked. Use 'gitkeep add <username>' to start.\n".to_string();
 	}
-	println!("Tracked users and orgs ({} total):", config.track.len());
+	out.push_str(&format!("Tracked users and orgs ({} total):\n", config.track.len()));
 	for user in &config.track {
 		let mut tags = Vec::new();
 		if user.forks {
@@ -61,7 +60,87 @@ pub fn list() -> Result<()> {
 			tags.push("frozen");
 		}
 		let suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags.join(", ")) };
-		println!("  {}{}", user.name, suffix);
+		out.push_str(&format!("  {}{}\n", user.name, suffix));
 	}
+	if !config.skipped.is_empty() {
+		let mut sorted: Vec<&String> = config.skipped.iter().collect();
+		sorted.sort();
+		out.push_str(&format!("\nSkipped repos ({} total):\n", sorted.len()));
+		for repo in sorted {
+			out.push_str(&format!("  {repo}\n"));
+		}
+	}
+	out
+}
+
+pub fn list() -> Result<()> {
+	let config = Config::load()?;
+	print!("{}", format_list(&config));
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn list_empty_state_shows_hint() {
+		let config = Config::default();
+		let out = format_list(&config);
+		assert!(out.contains("gitkeep add"), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_tracked_users() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false);
+		let out = format_list(&config);
+		assert!(out.contains("alice"), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_forks_tag() {
+		let mut config = Config::default();
+		config.add_user("alice", true, false);
+		let out = format_list(&config);
+		assert!(out.contains("forks"), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_frozen_tag() {
+		let mut config = Config::default();
+		config.add_user("alice", false, true);
+		let out = format_list(&config);
+		assert!(out.contains("frozen"), "got: {out}");
+	}
+
+	#[test]
+	fn list_omits_skipped_section_when_none() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false);
+		let out = format_list(&config);
+		assert!(!out.to_lowercase().contains("skipped"), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_skipped_section_when_present() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false);
+		config.skip_repo("alice/noisy");
+		let out = format_list(&config);
+		assert!(out.contains("alice/noisy"), "got: {out}");
+		assert!(out.to_lowercase().contains("skipped"), "got: {out}");
+	}
+
+	#[test]
+	fn list_skipped_repos_are_sorted() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false);
+		config.skip_repo("alice/zzz");
+		config.skip_repo("alice/aaa");
+		let out = format_list(&config);
+		let aaa_pos = out.find("alice/aaa").unwrap();
+		let zzz_pos = out.find("alice/zzz").unwrap();
+		assert!(aaa_pos < zzz_pos, "got: {out}");
+	}
 }
