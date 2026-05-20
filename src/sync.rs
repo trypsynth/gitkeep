@@ -30,6 +30,8 @@ struct Totals {
 	skipped: usize,
 	ignored: usize,
 	failed: usize,
+	updated_repos: Vec<String>,
+	new_repos: Vec<String>,
 }
 
 pub async fn run(
@@ -118,6 +120,12 @@ async fn sync_all(
 	if config_changed {
 		config.save().context("Could not save config after correcting username casing")?;
 	}
+	if verbosity == Verbosity::Normal {
+		if let Some(detail) = build_normal_detail(&totals) {
+			println!("{detail}");
+			println!();
+		}
+	}
 	println!("{}", build_summary(&totals));
 	Ok(())
 }
@@ -154,6 +162,29 @@ fn build_summary(totals: &Totals) -> String {
 	format!("Done. {}.", parts.join(", "))
 }
 
+fn build_normal_detail(totals: &Totals) -> Option<String> {
+	if totals.new_repos.is_empty() && totals.updated_repos.is_empty() {
+		return None;
+	}
+	let mut out = String::new();
+	if !totals.new_repos.is_empty() {
+		out.push_str("Cloned:\n");
+		for r in &totals.new_repos {
+			out.push_str(&format!("  {r}\n"));
+		}
+	}
+	if !totals.updated_repos.is_empty() {
+		if !out.is_empty() {
+			out.push('\n');
+		}
+		out.push_str("Updated:\n");
+		for r in &totals.updated_repos {
+			out.push_str(&format!("  {r}\n"));
+		}
+	}
+	Some(out.trim_end().to_string())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -178,6 +209,49 @@ mod tests {
 	fn summary_nothing_to_do_when_truly_empty() {
 		let s = build_summary(&Totals::default());
 		assert_eq!(s, "Nothing to do.");
+	}
+
+	#[test]
+	fn detail_empty_when_nothing_notable() {
+		let totals = Totals { pulled_up_to_date: 5, ..Totals::default() };
+		assert!(build_normal_detail(&totals).is_none());
+	}
+
+	#[test]
+	fn detail_shows_cloned_section() {
+		let totals = Totals { new_repos: vec!["alice/fresh".to_string()], cloned: 1, ..Totals::default() };
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(detail.contains("Cloned"), "got: {detail}");
+		assert!(detail.contains("alice/fresh"), "got: {detail}");
+	}
+
+	#[test]
+	fn detail_shows_updated_section() {
+		let totals = Totals { updated_repos: vec!["alice/old".to_string()], pulled_updated: 1, ..Totals::default() };
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(detail.contains("Updated"), "got: {detail}");
+		assert!(detail.contains("alice/old"), "got: {detail}");
+	}
+
+	#[test]
+	fn detail_omits_empty_sections() {
+		let totals = Totals { updated_repos: vec!["alice/repo".to_string()], pulled_updated: 1, ..Totals::default() };
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(!detail.contains("Cloned"), "got: {detail}");
+	}
+
+	#[test]
+	fn detail_shows_both_sections_when_populated() {
+		let totals = Totals {
+			new_repos: vec!["alice/new".to_string()],
+			updated_repos: vec!["alice/old".to_string()],
+			cloned: 1,
+			pulled_updated: 1,
+			..Totals::default()
+		};
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(detail.contains("Cloned"), "got: {detail}");
+		assert!(detail.contains("Updated"), "got: {detail}");
 	}
 }
 
@@ -324,15 +398,12 @@ fn sync_repo_list(
 				PullOutcome::Updated => {
 					state.mark_synced(full_name);
 					if verbosity == Verbosity::Normal {
-						println!("  {username}/{name} — updated");
+						totals.updated_repos.push(format!("{username}/{name}"));
 					}
 					totals.pulled_updated += 1;
 				}
 				PullOutcome::UpToDate => {
 					state.mark_synced(full_name);
-					if verbosity == Verbosity::Normal {
-						println!("  {username}/{name} — up to date");
-					}
 					totals.pulled_up_to_date += 1;
 				}
 				PullOutcome::Fatal => {
@@ -348,26 +419,18 @@ fn sync_repo_list(
 						Ok(()) => {
 							state.mark_synced(full_name);
 							if verbosity == Verbosity::Normal {
-								println!("  {username}/{name} — re-cloned");
+								totals.new_repos.push(format!("{username}/{name}"));
 							}
 							totals.cloned += 1;
 						}
 						Err(e) => {
-							if verbosity == Verbosity::Normal {
-								eprintln!("  {username}/{name} — failed");
-							} else {
-								eprintln!("  Failed to re-clone {username}/{name}: {e:#}.");
-							}
+							eprintln!("  Failed to re-clone {username}/{name}: {e:#}.");
 							totals.failed += 1;
 						}
 					}
 				}
 				PullOutcome::Failed(e) => {
-					if verbosity == Verbosity::Normal {
-						eprintln!("  {username}/{name} — failed");
-					} else {
-						eprintln!("  Failed to pull {username}/{name}: {e:#}.");
-					}
+					eprintln!("  Failed to pull {username}/{name}: {e:#}.");
 					totals.failed += 1;
 				}
 			}
@@ -379,16 +442,12 @@ fn sync_repo_list(
 				Ok(()) => {
 					state.mark_synced(full_name);
 					if verbosity == Verbosity::Normal {
-						println!("  {username}/{name} — cloned");
+						totals.new_repos.push(format!("{username}/{name}"));
 					}
 					totals.cloned += 1;
 				}
 				Err(e) => {
-					if verbosity == Verbosity::Normal {
-						eprintln!("  {username}/{name} — failed");
-					} else {
-						eprintln!("  Failed to clone {username}/{name}: {e:#}.");
-					}
+					eprintln!("  Failed to clone {username}/{name}: {e:#}.");
 					totals.failed += 1;
 				}
 			}
