@@ -319,12 +319,6 @@ async fn sync_one(
 					);
 				}
 				println!("{msg}");
-			} else if verbosity == Verbosity::Normal && !include_forks && fork_count > 0 {
-				println!(
-					"Note: skipping {} for {}. Run with --forks to include them.",
-					plural(fork_count, "fork", "forks"),
-					canonical
-				);
 			}
 			sync_repo_list(
 				repos,
