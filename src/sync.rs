@@ -187,7 +187,44 @@ fn build_normal_detail(totals: &Totals) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+	use chrono::{Duration, Utc};
+
 	use super::*;
+
+	#[test]
+	fn skip_pull_when_pushed_at_matches() {
+		let t = Utc::now();
+		assert!(should_skip_pull(Some(t), Some(t)));
+	}
+
+	#[test]
+	fn skip_pull_when_repo_older_than_state() {
+		let older = Utc::now() - Duration::hours(1);
+		let newer = Utc::now();
+		assert!(should_skip_pull(Some(older), Some(newer)));
+	}
+
+	#[test]
+	fn pull_when_repo_pushed_at_is_newer() {
+		let older = Utc::now() - Duration::hours(1);
+		let newer = Utc::now();
+		assert!(!should_skip_pull(Some(newer), Some(older)));
+	}
+
+	#[test]
+	fn pull_when_no_state_pushed_at() {
+		assert!(!should_skip_pull(Some(Utc::now()), None));
+	}
+
+	#[test]
+	fn pull_when_no_repo_pushed_at() {
+		assert!(!should_skip_pull(None, Some(Utc::now())));
+	}
+
+	#[test]
+	fn pull_when_neither_pushed_at() {
+		assert!(!should_skip_pull(None, None));
+	}
 
 	fn totals(ignored: usize) -> Totals {
 		Totals { ignored, ..Totals::default() }
@@ -387,20 +424,26 @@ fn sync_repo_list(
 			totals.skipped += 1;
 			continue;
 		}
+		let repo_pushed_at = repo.pushed_at;
 		if already_cloned {
+			let state_pushed_at = state.repos.get(full_name).and_then(|s| s.pushed_at);
+			if should_skip_pull(repo_pushed_at, state_pushed_at) {
+				totals.pulled_up_to_date += 1;
+				continue;
+			}
 			if verbosity == Verbosity::Verbose {
 				println!("Pulling {username}/{name}...");
 			}
 			match git_pull(&repo_dir, verbosity) {
 				PullOutcome::Updated => {
-					state.mark_synced(full_name);
+					state.mark_synced(full_name, repo_pushed_at);
 					if verbosity == Verbosity::Normal {
 						totals.updated_repos.push(format!("{username}/{name}"));
 					}
 					totals.pulled_updated += 1;
 				}
 				PullOutcome::UpToDate => {
-					state.mark_synced(full_name);
+					state.mark_synced(full_name, repo_pushed_at);
 					totals.pulled_up_to_date += 1;
 				}
 				PullOutcome::Fatal => {
@@ -414,7 +457,7 @@ fn sync_repo_list(
 					}
 					match git_clone(&url, &repo_dir, verbosity) {
 						Ok(()) => {
-							state.mark_synced(full_name);
+							state.mark_synced(full_name, repo_pushed_at);
 							if verbosity == Verbosity::Normal {
 								totals.new_repos.push(format!("{username}/{name}"));
 							}
@@ -437,7 +480,7 @@ fn sync_repo_list(
 			}
 			match git_clone(&url, &repo_dir, verbosity) {
 				Ok(()) => {
-					state.mark_synced(full_name);
+					state.mark_synced(full_name, repo_pushed_at);
 					if verbosity == Verbosity::Normal {
 						totals.new_repos.push(format!("{username}/{name}"));
 					}
@@ -519,6 +562,16 @@ async fn fetch_public(client: &Octocrab, username: &str) -> Result<Vec<Repositor
 
 fn clone_url(repo: &Repository, use_ssh: bool) -> Option<String> {
 	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(std::string::ToString::to_string) }
+}
+
+fn should_skip_pull(
+	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+	state_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+	match (repo_pushed_at, state_pushed_at) {
+		(Some(repo), Some(state)) => repo <= state,
+		_ => false,
+	}
 }
 
 fn git_head(repo_dir: &Path) -> Option<String> {

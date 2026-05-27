@@ -180,6 +180,8 @@ pub struct State {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoState {
 	pub last_synced_at: DateTime<Utc>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub pushed_at: Option<DateTime<Utc>>,
 }
 
 impl State {
@@ -203,8 +205,8 @@ impl State {
 		fs::write(&path, raw).with_context(|| format!("Could not write state to {}", path.display()))
 	}
 
-	pub fn mark_synced(&mut self, full_name: &str) {
-		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now() });
+	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>) {
+		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now(), pushed_at });
 	}
 
 	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
@@ -268,6 +270,22 @@ mod tests {
 	fn config_is_skipped_false_for_unknown() {
 		let config = Config::default();
 		assert!(!config.is_skipped("user/repo"));
+	}
+
+	#[test]
+	fn state_mark_synced_stores_pushed_at() {
+		let mut state = State::default();
+		let t = chrono::Utc::now();
+		state.mark_synced("user/repo", Some(t));
+		let stored = state.repos["user/repo"].pushed_at;
+		assert!(stored.is_some());
+	}
+
+	#[test]
+	fn state_mark_synced_stores_none_pushed_at() {
+		let mut state = State::default();
+		state.mark_synced("user/repo", None);
+		assert!(state.repos["user/repo"].pushed_at.is_none());
 	}
 
 	#[test]
