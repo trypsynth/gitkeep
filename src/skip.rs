@@ -29,9 +29,9 @@ pub async fn add(repos: &[String]) -> Result<()> {
 				config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map_or(user, |u| u.name.as_str());
 			let key = format!("{canonical_user}/{name}");
 			if config.skip_repo(&key) {
-				println!("Ignoring {key}.");
+				println!("Skipping {key}.");
 			} else {
-				println!("Already ignoring {key}. Run 'gitkeep unskip {key}' to stop.");
+				println!("Already skipping {key}. Run 'gitkeep unskip {key}' to stop.");
 			}
 			continue;
 		}
@@ -51,9 +51,9 @@ pub async fn add(repos: &[String]) -> Result<()> {
 		};
 
 		if config.skip_repo(&full_name) {
-			println!("Ignoring {full_name}.");
+			println!("Skipping {full_name}.");
 		} else {
-			println!("Already ignoring {full_name}. Run 'gitkeep unskip {full_name}' to stop.");
+			println!("Already skipping {full_name}. Run 'gitkeep unskip {full_name}' to stop.");
 		}
 	}
 
@@ -63,9 +63,9 @@ pub async fn add(repos: &[String]) -> Result<()> {
 fn unskip_one(config: &mut Config, repo: &str) -> Result<()> {
 	parse_repo_arg(repo)?;
 	if config.unskip_repo(repo) {
-		println!("No longer ignoring {repo}.");
+		println!("No longer skipping {repo}.");
 	} else {
-		println!("'{repo}' is not being ignored.");
+		println!("'{repo}' is not currently skipped.");
 	}
 	Ok(())
 }
@@ -116,7 +116,7 @@ mod tests {
 	}
 
 	#[test]
-	fn unskip_one_prints_not_ignored_when_not_skipped() {
+	fn unskip_one_succeeds_when_not_skipped() {
 		let mut config = Config::default();
 		// should succeed (not error) even if not currently skipped
 		assert!(unskip_one(&mut config, "user/repo").is_ok());

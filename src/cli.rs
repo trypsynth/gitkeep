@@ -27,12 +27,12 @@ pub enum Commands {
 		#[arg(long)]
 		no_sync: bool,
 	},
-	/// Ignore a specific repo during sync (use user/repo format)
+	/// Skip a specific repo during sync (use user/repo format)
 	Skip {
 		#[arg(value_name = "REPO", required = true)]
 		repos: Vec<String>,
 	},
-	/// Stop ignoring a previously skipped repo
+	/// Re-enable a previously skipped repo
 	Unskip {
 		#[arg(value_name = "REPO", required = true)]
 		repos: Vec<String>,
@@ -50,8 +50,8 @@ pub enum Commands {
 	#[command(alias = "ls")]
 	List,
 	/// Sync all tracked users. Optionally pass usernames to add and sync immediately.
-	#[command(alias = "sync")]
-	Run {
+	#[command(alias = "run")]
+	Sync {
 		/// GitHub usernames or orgs to add to the track list and sync right now
 		#[arg(value_name = "USERNAME")]
 		users: Vec<String>,

@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
 		Commands::Unskip { repos } => skip::remove(&repos),
 		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
-		Commands::Run { users, forks, pull_only, new_only, quiet, verbose } => {
+		Commands::Sync { users, forks, pull_only, new_only, quiet, verbose } => {
 			let verbosity = if quiet {
 				sync::Verbosity::Quiet
 			} else if verbose {
