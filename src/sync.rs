@@ -28,7 +28,7 @@ struct Totals {
 	pulled_up_to_date: usize,
 	cloned: usize,
 	skipped: usize,
-	ignored: usize,
+	excluded: usize,
 	failed: usize,
 	updated_repos: Vec<String>,
 	new_repos: Vec<String>,
@@ -131,14 +131,10 @@ async fn sync_all(
 }
 
 fn build_summary(totals: &Totals) -> String {
-	let total_processed = totals.pulled_updated
-		+ totals.pulled_up_to_date
-		+ totals.cloned
-		+ totals.failed
-		+ totals.skipped
-		+ totals.ignored;
+	let total_processed =
+		totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.failed + totals.skipped;
 	if total_processed == 0 {
-		return "Nothing to do.".to_string();
+		return if totals.excluded > 0 { "Done.".to_string() } else { "Nothing to do.".to_string() };
 	}
 	let mut parts: Vec<String> = Vec::new();
 	if totals.cloned > 0 {
@@ -152,9 +148,6 @@ fn build_summary(totals: &Totals) -> String {
 	}
 	if totals.skipped > 0 {
 		parts.push(format!("{} skipped", plural(totals.skipped, "repo", "repos")));
-	}
-	if totals.ignored > 0 {
-		parts.push(format!("{} ignored", plural(totals.ignored, "repo", "repos")));
 	}
 	if totals.failed > 0 {
 		parts.push(format!("{} failed", plural(totals.failed, "repo", "repos")));
@@ -226,18 +219,18 @@ mod tests {
 		assert!(!should_skip_pull(None, None));
 	}
 
-	fn totals(ignored: usize) -> Totals {
-		Totals { ignored, ..Totals::default() }
+	fn totals(skipped: usize) -> Totals {
+		Totals { skipped, ..Totals::default() }
 	}
 
 	#[test]
-	fn summary_shows_ignored_count() {
+	fn summary_shows_user_skipped_count() {
 		let s = build_summary(&totals(2));
-		assert!(s.contains("2 repos ignored"), "got: {s}");
+		assert!(s.contains("2 repos skipped"), "got: {s}");
 	}
 
 	#[test]
-	fn summary_not_nothing_to_do_when_only_ignored() {
+	fn summary_not_nothing_to_do_when_only_skipped() {
 		let s = build_summary(&totals(1));
 		assert_ne!(s, "Nothing to do.");
 	}
@@ -246,6 +239,19 @@ mod tests {
 	fn summary_nothing_to_do_when_truly_empty() {
 		let s = build_summary(&Totals::default());
 		assert_eq!(s, "Nothing to do.");
+	}
+
+	#[test]
+	fn summary_does_not_show_excluded() {
+		let s = build_summary(&Totals { excluded: 5, ..Totals::default() });
+		assert!(!s.contains("excluded"), "got: {s}");
+		assert!(!s.contains("skipped"), "got: {s}");
+	}
+
+	#[test]
+	fn summary_shows_done_when_only_excluded() {
+		let s = build_summary(&Totals { excluded: 5, ..Totals::default() });
+		assert_eq!(s, "Done.");
 	}
 
 	#[test]
@@ -403,25 +409,25 @@ fn sync_repo_list(
 		let name = &repo.name;
 		let full_name = repo.full_name.as_deref().unwrap_or(name.as_str());
 		if config.is_skipped(full_name) {
-			totals.ignored += 1;
+			totals.skipped += 1;
 			continue;
 		}
 		if repo.fork.unwrap_or(false) && !include_forks {
-			totals.skipped += 1;
+			totals.excluded += 1;
 			continue;
 		}
 		let Some(url) = clone_url(&repo, config.use_ssh) else {
-			totals.skipped += 1;
+			totals.excluded += 1;
 			continue;
 		};
 		let repo_dir = user_dir.join(name.as_str());
 		let already_cloned = repo_dir.exists();
 		if already_cloned && new_only {
-			totals.skipped += 1;
+			totals.excluded += 1;
 			continue;
 		}
 		if !already_cloned && pull_only {
-			totals.skipped += 1;
+			totals.excluded += 1;
 			continue;
 		}
 		let repo_pushed_at = repo.pushed_at;
