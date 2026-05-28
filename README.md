@@ -1,6 +1,6 @@
 # gitkeep
 
-A high-performance CLI tool to manage and maintain local archives of GitHub users and organizations.
+A CLI tool for maintaining local archives of GitHub users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs. Syncs are efficient — repos whose `pushed_at` timestamp hasn't changed since the last run are skipped without spawning a git process.
 
 ## Install
 
@@ -20,22 +20,53 @@ cargo install --path .
 
 ## Quick start
 
-- Setup: `gitkeep init`
-- Authenticate: `gitkeep login`
-- Track a user: `gitkeep add trypsynth`
-- Sync everything: `gitkeep run`
-- Show tracked list: `gitkeep list`
+```bash
+gitkeep init          # set archive directory and clone URL preference
+gitkeep login         # authenticate with a GitHub personal access token
+gitkeep add trypsynth # add a user (clones all their repos immediately)
+gitkeep sync          # sync everything
+gitkeep list          # show what's tracked
+```
 
 ## Commands
 
-Usage: `gitkeep <COMMAND>`
+### `init`
+Configure the archive directory and whether to use SSH or HTTPS clone URLs. Re-run at any time to update settings; your token and tracked users are preserved.
 
-- `init` Create or reset the config file interactively
-- `login` Authenticate with a GitHub personal access token
-- `add <USERS>` Add users or orgs to the archive list
-- `remove <USERS>` Stop tracking one or more users or orgs
-- `list` (alias: `ls`) Show all tracked users and orgs
-- `run` (alias: `sync`) Sync all tracked users immediately
+### `login`
+Authenticate with a GitHub personal access token. Opens the token creation page in your browser, validates the token, and saves it to config. Also adds your own account to the tracked list automatically.
+
+### `add <USERNAME>...`
+Add one or more GitHub users or orgs to the archive list and clone their repos immediately.
+
+| Flag | Description |
+|------|-------------|
+| `--forks` | Include forked repositories for these accounts |
+| `--frozen` | Track the account but never update it during bulk syncs |
+| `--no-sync` | Add to the tracked list without cloning right now |
+
+### `sync [USERNAME]...`  _(alias: `run`)_
+Sync all tracked accounts. Passing usernames adds them to the tracked list and syncs them immediately (same as `add` + `sync`).
+
+| Flag | Description |
+|------|-------------|
+| `--forks` | Include forks for this run only (does not save to config) |
+| `-p, --pull-only` | Only pull existing repos; skip checking for new ones |
+| `-n, --new-only` | Only clone new repos; skip pulling existing ones |
+| `-q, --quiet` | Suppress all output except errors and the final summary |
+| `-v, --verbose` | Show raw git output and per-repo detail |
+
+### `skip <user/repo>...`
+Exclude a specific repo from future syncs. Accepts `user/repo` format.
+
+### `unskip <user/repo>...`
+Re-enable a previously skipped repo.
+
+### `list`  _(alias: `ls`)_
+Show all tracked users and orgs, including any per-account flags and the list of skipped repos.
+
+### `remove <USERNAME>...`  _(alias: `rm`)_
+Stop tracking one or more users or orgs. Prompts to delete the local archive directory; pass `--delete` to skip the prompt.
 
 ## License
 
