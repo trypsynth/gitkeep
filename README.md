@@ -1,6 +1,6 @@
 # gitkeep
 
-A CLI tool for maintaining local archives of GitHub users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs. Syncs are efficient — repos whose `pushed_at` timestamp hasn't changed since the last run are skipped without spawning a git process.
+A CLI tool for maintaining local archives of GitHub users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
 
 ## Install
 
