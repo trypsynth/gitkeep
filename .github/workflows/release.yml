@@ -1,0 +1,76 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          - aarch64-pc-windows-gnullvm
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          zig-version: master
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --force
+      - name: Build
+        run: cargo zigbuild --release --locked --target ${{ matrix.target }}
+      - name: Copy binary (Unix)
+        if: "!contains(matrix.target, 'windows')"
+        run: cp target/${{ matrix.target }}/release/gitkeep gitkeep-${{ matrix.target }}
+      - name: Copy binary (Windows)
+        if: contains(matrix.target, 'windows')
+        run: cp target/${{ matrix.target }}/release/gitkeep.exe gitkeep-${{ matrix.target }}.exe
+      - name: Upload artifact (Unix)
+        if: "!contains(matrix.target, 'windows')"
+        uses: actions/upload-artifact@v7
+        with:
+          name: gitkeep-${{ matrix.target }}
+          path: gitkeep-${{ matrix.target }}
+      - name: Upload artifact (Windows)
+        if: contains(matrix.target, 'windows')
+        uses: actions/upload-artifact@v7
+        with:
+          name: gitkeep-${{ matrix.target }}
+          path: gitkeep-${{ matrix.target }}.exe
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts/
+          merge-multiple: true
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
