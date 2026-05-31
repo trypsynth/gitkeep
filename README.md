@@ -2,6 +2,19 @@
 
 A CLI tool for maintaining local archives of GitHub users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
 
+## Download
+
+Pre-built binaries are available on the [releases page](https://github.com/trypsynth/gitkeep/releases/latest).
+
+| Platform | Architecture | Download |
+|----------|-------------|---------|
+| Linux | x86_64 | [gitkeep-x86_64-unknown-linux-musl](https://github.com/trypsynth/gitkeep/releases/latest/download/gitkeep-x86_64-unknown-linux-musl) |
+| Linux | ARM64 | [gitkeep-aarch64-unknown-linux-musl](https://github.com/trypsynth/gitkeep/releases/latest/download/gitkeep-aarch64-unknown-linux-musl) |
+| macOS | x86_64 | [gitkeep-x86_64-apple-darwin](https://github.com/trypsynth/gitkeep/releases/latest/download/gitkeep-x86_64-apple-darwin) |
+| macOS | ARM64 (Apple Silicon) | [gitkeep-aarch64-apple-darwin](https://github.com/trypsynth/gitkeep/releases/latest/download/gitkeep-aarch64-apple-darwin) |
+| Windows | x86_64 | [gitkeep-x86_64-pc-windows-gnu.exe](https://github.com/trypsynth/gitkeep/releases/latest/download/gitkeep-x86_64-pc-windows-gnu.exe) |
+| Windows | ARM64 | [gitkeep-aarch64-pc-windows-gnullvm.exe](https://github.com/trypsynth/gitkeep/releases/latest/download/gitkeep-aarch64-pc-windows-gnullvm.exe) |
+
 ## Install
 
 ### With cargo
