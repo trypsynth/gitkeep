@@ -22,8 +22,14 @@ pub fn run() -> Result<()> {
 		.prompt()
 		.map(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })?;
 	let use_ssh = confirm("Use SSH clone URLs?", existing.use_ssh)?;
-	let config =
-		Config { token: existing.token, archive_dir, use_ssh, track: existing.track, skipped: existing.skipped };
+	let config = Config {
+		token: existing.token,
+		archive_dir,
+		use_ssh,
+		track: existing.track,
+		skipped: existing.skipped,
+		pinned: existing.pinned,
+	};
 	config.save()?;
 	println!("Config written to {}.", path.display());
 	if config.token.is_none() {

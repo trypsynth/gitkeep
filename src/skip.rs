@@ -36,6 +36,14 @@ pub async fn add(repos: &[String]) -> Result<()> {
 			continue;
 		}
 
+		// Conflict: repo is individually pinned.
+		if config.pinned.iter().any(|p| p.eq_ignore_ascii_case(repo_str)) {
+			bail!(
+				"'{repo_str}' is currently pinned. Run 'gitkeep remove {repo_str}' to stop \
+				 tracking it instead."
+			);
+		}
+
 		let user_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(user));
 		if !user_tracked {
 			bail!(

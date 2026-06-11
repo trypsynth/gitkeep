@@ -26,6 +26,8 @@ pub struct Config {
 	pub track: Vec<TrackedUser>,
 	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
 	pub skipped: HashSet<String>,
+	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
+	pub pinned: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +169,34 @@ impl Config {
 	pub fn is_skipped(&self, full_name: &str) -> bool {
 		self.skipped.contains(full_name)
 	}
+
+	/// Returns `true` if this is a new pin, `false` if already pinned.
+	pub fn pin_repo(&mut self, full_name: &str) -> bool {
+		self.pinned.insert(full_name.to_string())
+	}
+
+	/// Returns `true` if the repo was pinned and is now removed, `false` if it wasn't pinned.
+	pub fn unpin_repo(&mut self, full_name: &str) -> bool {
+		self.pinned.remove(full_name)
+	}
+
+	pub fn is_pinned(&self, full_name: &str) -> bool {
+		self.pinned.contains(full_name)
+	}
+
+	/// Removes all pinned repos owned by `user` (case-insensitive) and returns them.
+	pub fn remove_pins_for_user(&mut self, user: &str) -> Vec<String> {
+		let to_remove: Vec<String> = self
+			.pinned
+			.iter()
+			.filter(|p| p.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)))
+			.cloned()
+			.collect();
+		for pin in &to_remove {
+			self.pinned.remove(pin);
+		}
+		to_remove
+	}
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -302,5 +332,74 @@ mod tests {
 		state.skipped.insert("user/repo".to_string());
 		state.drain_legacy_skipped();
 		assert!(state.skipped.is_empty());
+	}
+
+	#[test]
+	fn config_pin_repo_marks_as_pinned() {
+		let mut config = Config::default();
+		config.pin_repo("user/repo");
+		assert!(config.is_pinned("user/repo"));
+	}
+
+	#[test]
+	fn config_pin_repo_returns_true_for_new_pin() {
+		let mut config = Config::default();
+		assert!(config.pin_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_pin_repo_returns_false_for_duplicate() {
+		let mut config = Config::default();
+		config.pin_repo("user/repo");
+		assert!(!config.pin_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_unpin_repo_returns_true_when_was_pinned() {
+		let mut config = Config::default();
+		config.pin_repo("user/repo");
+		assert!(config.unpin_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_unpin_repo_returns_false_when_not_pinned() {
+		let mut config = Config::default();
+		assert!(!config.unpin_repo("user/repo"));
+	}
+
+	#[test]
+	fn config_is_pinned_false_for_unknown() {
+		let config = Config::default();
+		assert!(!config.is_pinned("user/repo"));
+	}
+
+	#[test]
+	fn config_remove_pins_for_user_removes_matching() {
+		let mut config = Config::default();
+		config.pin_repo("alice/foo");
+		config.pin_repo("alice/bar");
+		config.pin_repo("bob/baz");
+		let removed = config.remove_pins_for_user("alice");
+		assert_eq!(removed.len(), 2);
+		assert!(!config.is_pinned("alice/foo"));
+		assert!(!config.is_pinned("alice/bar"));
+		assert!(config.is_pinned("bob/baz"));
+	}
+
+	#[test]
+	fn config_remove_pins_for_user_case_insensitive() {
+		let mut config = Config::default();
+		config.pin_repo("Alice/foo");
+		let removed = config.remove_pins_for_user("alice");
+		assert_eq!(removed.len(), 1);
+		assert!(!config.is_pinned("Alice/foo"));
+	}
+
+	#[test]
+	fn config_remove_pins_for_user_returns_empty_when_none() {
+		let mut config = Config::default();
+		config.pin_repo("bob/baz");
+		let removed = config.remove_pins_for_user("alice");
+		assert!(removed.is_empty());
 	}
 }

@@ -13,9 +13,9 @@ pub enum Commands {
 	Init,
 	/// Authenticate with a GitHub personal access token
 	Login,
-	/// Add one or more GitHub users or orgs to the archive list
+	/// Add GitHub users, orgs, or individual repos (user/repo) to the archive
 	Add {
-		#[arg(value_name = "USERNAME", required = true)]
+		#[arg(value_name = "TARGET", required = true)]
 		users: Vec<String>,
 		/// Include forked repositories from these users
 		#[arg(long)]
@@ -37,10 +37,10 @@ pub enum Commands {
 		#[arg(value_name = "REPO", required = true)]
 		repos: Vec<String>,
 	},
-	/// Stop tracking one or more users or orgs
+	/// Stop tracking one or more users, orgs, or pinned repos (user/repo)
 	#[command(alias = "rm")]
 	Remove {
-		#[arg(value_name = "USERNAME", required = true)]
+		#[arg(value_name = "TARGET", required = true)]
 		users: Vec<String>,
 		/// Also delete the local archive directory for these users
 		#[arg(short, long)]

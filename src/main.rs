@@ -23,20 +23,38 @@ async fn main() -> Result<()> {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
 		Commands::Add { users, forks, frozen, no_sync } => {
-			let config = crate::config::Config::load()?;
-			let client = config.build_client()?;
-			let mut resolved = Vec::with_capacity(users.len());
-			for name in &users {
-				let canonical = sync::resolve_login(&client, name).await?;
-				if canonical != *name {
-					println!("Resolved '{name}' to '{canonical}'.");
+			let (repos, usernames): (Vec<String>, Vec<String>) = users.into_iter().partition(|s| s.contains('/'));
+
+			// Handle plain usernames first so that if someone mixes both formats
+			// (e.g. `gitkeep add rust-lang rust-lang/mdBook`), the full-user tracking
+			// wins and the individual pin is skipped cleanly.
+			if !usernames.is_empty() {
+				let config = crate::config::Config::load()?;
+				let client = config.build_client()?;
+				let mut resolved = Vec::with_capacity(usernames.len());
+				for name in &usernames {
+					let canonical = sync::resolve_login(&client, name).await?;
+					if canonical != *name {
+						println!("Resolved '{name}' to '{canonical}'.");
+					}
+					resolved.push(canonical);
 				}
-				resolved.push(canonical);
+				track::add(&resolved, forks, frozen)?;
+				if !no_sync {
+					sync::run_for(&resolved, forks).await?;
+				}
 			}
-			track::add(&resolved, forks, frozen)?;
-			if !no_sync {
-				sync::run_for(&resolved, forks).await?;
+
+			// Handle individual repo pins.
+			if !repos.is_empty() {
+				let config = crate::config::Config::load()?;
+				let client = config.build_client()?;
+				let newly_pinned = track::add_pinned(&repos, &client).await?;
+				if !no_sync {
+					sync::run_pinned(&newly_pinned).await?;
+				}
 			}
+
 			Ok(())
 		}
 		Commands::Skip { repos } => skip::add(&repos).await,

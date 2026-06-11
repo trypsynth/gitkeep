@@ -51,18 +51,26 @@ pub async fn run(
 	if updated {
 		config.save().context("Could not update config")?;
 	}
-	if config.track.is_empty() {
+	if config.track.is_empty() && config.pinned.is_empty() {
 		bail!(
 			"Nothing to sync. Use 'gitkeep add <username>' to start building your library, \
              or run 'gitkeep login' to authenticate and auto-add your account."
 		);
 	}
 	let to_sync: Vec<TrackedUser> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
-	if to_sync.is_empty() {
+	if to_sync.is_empty() && config.pinned.is_empty() {
 		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
 		return Ok(());
 	}
-	sync_all(&mut config, &to_sync, force_forks, pull_only, new_only, verbosity).await
+	// Include pinned repos whose owner is not covered by a tracked user.
+	let tracked_names: Vec<&str> = to_sync.iter().map(|u| u.name.as_str()).collect();
+	let pinned_to_sync: Vec<String> = config
+		.pinned
+		.iter()
+		.filter(|p| p.split_once('/').is_some_and(|(u, _)| !tracked_names.iter().any(|t| t.eq_ignore_ascii_case(u))))
+		.cloned()
+		.collect();
+	sync_all(&mut config, &to_sync, &pinned_to_sync, force_forks, pull_only, new_only, verbosity).await
 }
 
 pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
@@ -73,12 +81,23 @@ pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
 		println!("No matching users found to sync.");
 		return Ok(());
 	}
-	sync_all(&mut config, &to_sync, force_forks, false, false, Verbosity::Normal).await
+	sync_all(&mut config, &to_sync, &[], force_forks, false, false, Verbosity::Normal).await
 }
 
+/// Syncs a specific set of pinned repos (used right after `gitkeep add user/repo`).
+pub async fn run_pinned(repos: &[String]) -> Result<()> {
+	if repos.is_empty() {
+		return Ok(());
+	}
+	let mut config = Config::load().context("Could not load config")?;
+	sync_all(&mut config, &[], repos, false, false, false, Verbosity::Normal).await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn sync_all(
 	config: &mut Config,
 	users: &[TrackedUser],
+	pinned: &[String],
 	force_forks: bool,
 	pull_only: bool,
 	new_only: bool,
@@ -115,6 +134,20 @@ async fn sync_all(
 				config_changed = true;
 			}
 		}
+	}
+	for full_name in pinned {
+		sync_one_pinned(
+			full_name,
+			pull_only,
+			new_only,
+			verbosity,
+			&client,
+			&archive_dir,
+			config,
+			&mut state,
+			&mut totals,
+		)
+		.await;
 	}
 	state.save().context("Could not save sync state")?;
 	if config_changed {
@@ -384,6 +417,33 @@ async fn sync_one(
 		}
 	}
 	config_changed
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_one_pinned(
+	full_name: &str,
+	pull_only: bool,
+	new_only: bool,
+	verbosity: Verbosity,
+	client: &Octocrab,
+	archive_dir: &Path,
+	config: &Config,
+	state: &mut State,
+	totals: &mut Totals,
+) {
+	let Some((user, name)) = full_name.split_once('/') else { return };
+	if verbosity == Verbosity::Verbose {
+		println!("Checking {full_name}...");
+	}
+	match client.repos(user, name).get().await {
+		Ok(repo) => {
+			sync_repo_list(vec![repo], user, true, pull_only, new_only, verbosity, archive_dir, config, state, totals);
+		}
+		Err(e) => {
+			eprintln!("  Could not fetch {full_name}: {e:#}.");
+			totals.failed += 1;
+		}
+	}
 }
 
 #[allow(clippy::too_many_arguments)]
