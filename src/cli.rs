@@ -31,6 +31,9 @@ pub enum Commands {
 	Skip {
 		#[arg(value_name = "REPO", required = true)]
 		repos: Vec<String>,
+		/// Also delete the local archive directory for these repos
+		#[arg(short, long)]
+		delete: bool,
 	},
 	/// Re-enable a previously skipped repo
 	Unskip {

@@ -1,3 +1,5 @@
+use std::fs;
+
 use anyhow::{Result, bail};
 
 use crate::config::Config;
@@ -15,7 +17,7 @@ fn parse_repo_arg(s: &str) -> Result<(&str, &str)> {
 	Ok((user, rest))
 }
 
-pub async fn add(repos: &[String]) -> Result<()> {
+pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
@@ -32,6 +34,10 @@ pub async fn add(repos: &[String]) -> Result<()> {
 				println!("Skipping {key}.");
 			} else {
 				println!("Already skipping {key}. Run 'gitkeep unskip {key}' to stop.");
+			}
+			if delete_dir {
+				println!("Deleting {}...", local_path.display());
+				fs::remove_dir_all(&local_path)?;
 			}
 			continue;
 		}
