@@ -88,16 +88,16 @@ pub fn prune(yes: bool) -> Result<()> {
 	let config = Config::load()?;
 	let archive_dir = config.archive_dir()?;
 
-	let mut to_delete: Vec<std::path::PathBuf> = config
+	let mut to_delete: Vec<(&str, std::path::PathBuf)> = config
 		.skipped
 		.iter()
 		.filter_map(|full_name| {
 			let (user, name) = full_name.split_once('/')?;
 			let path = archive_dir.join(user).join(name);
-			path.exists().then_some(path)
+			path.exists().then_some((full_name.as_str(), path))
 		})
 		.collect();
-	to_delete.sort();
+	to_delete.sort_by_key(|(name, _)| *name);
 
 	if to_delete.is_empty() {
 		println!("Nothing to prune.");
@@ -106,8 +106,8 @@ pub fn prune(yes: bool) -> Result<()> {
 
 	if !yes {
 		println!("The following local repos will be deleted:");
-		for path in &to_delete {
-			println!("  {}", path.display());
+		for (name, _) in &to_delete {
+			println!("  {name}");
 		}
 		if !crate::utils::confirm(
 			&format!("Delete {} local {}?", to_delete.len(), if to_delete.len() == 1 { "repo" } else { "repos" }),
@@ -118,8 +118,8 @@ pub fn prune(yes: bool) -> Result<()> {
 		}
 	}
 
-	for path in &to_delete {
-		println!("Deleting {}...", path.display());
+	for (name, path) in &to_delete {
+		println!("Deleting {name}...");
 		fs::remove_dir_all(path)?;
 	}
 	Ok(())

@@ -128,7 +128,7 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 	Ok(())
 }
 
-fn format_list(config: &Config) -> String {
+fn format_list(config: &Config, archive_dir: Option<&std::path::Path>) -> String {
 	let mut out = String::new();
 	if config.track.is_empty() && config.pinned.is_empty() {
 		return "No users tracked. Use 'gitkeep add <username>' to start.\n".to_string();
@@ -159,11 +159,22 @@ fn format_list(config: &Config) -> String {
 		}
 	}
 	if !config.skipped.is_empty() {
-		let mut sorted: Vec<&String> = config.skipped.iter().collect();
+		let mut sorted: Vec<&String> = config
+			.skipped
+			.iter()
+			.filter(|r| {
+				archive_dir
+					.as_ref()
+					.and_then(|d| r.split_once('/').map(|(u, n)| d.join(u).join(n).exists()))
+					.unwrap_or(true)
+			})
+			.collect();
 		sorted.sort();
-		let _ = writeln!(out, "\nSkipped repos ({} total):", sorted.len());
-		for repo in sorted {
-			let _ = writeln!(out, "  {repo}");
+		if !sorted.is_empty() {
+			let _ = writeln!(out, "\nSkipped repos ({} total):", sorted.len());
+			for repo in sorted {
+				let _ = writeln!(out, "  {repo}");
+			}
 		}
 	}
 	out
@@ -171,7 +182,8 @@ fn format_list(config: &Config) -> String {
 
 pub fn list() -> Result<()> {
 	let config = Config::load()?;
-	print!("{}", format_list(&config));
+	let archive_dir = config.archive_dir().ok();
+	print!("{}", format_list(&config, archive_dir.as_ref().map(|p| p.as_path())));
 	Ok(())
 }
 
@@ -182,7 +194,7 @@ mod tests {
 	#[test]
 	fn list_empty_state_shows_hint() {
 		let config = Config::default();
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(out.contains("gitkeep add"), "got: {out}");
 	}
 
@@ -190,7 +202,7 @@ mod tests {
 	fn list_pinned_only_does_not_show_hint() {
 		let mut config = Config::default();
 		config.pin_repo("alice/repo");
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(!out.contains("gitkeep add"), "got: {out}");
 	}
 
@@ -198,7 +210,7 @@ mod tests {
 	fn list_shows_tracked_users() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false);
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(out.contains("alice"), "got: {out}");
 	}
 
@@ -206,7 +218,7 @@ mod tests {
 	fn list_shows_forks_tag() {
 		let mut config = Config::default();
 		config.add_user("alice", true, false);
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(out.contains("forks"), "got: {out}");
 	}
 
@@ -214,7 +226,7 @@ mod tests {
 	fn list_shows_frozen_tag() {
 		let mut config = Config::default();
 		config.add_user("alice", false, true);
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(out.contains("frozen"), "got: {out}");
 	}
 
@@ -222,7 +234,7 @@ mod tests {
 	fn list_omits_skipped_section_when_none() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false);
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(!out.to_lowercase().contains("skipped"), "got: {out}");
 	}
 
@@ -231,7 +243,7 @@ mod tests {
 		let mut config = Config::default();
 		config.add_user("alice", false, false);
 		config.skip_repo("alice/noisy");
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(out.contains("alice/noisy"), "got: {out}");
 		assert!(out.to_lowercase().contains("skipped"), "got: {out}");
 	}
@@ -242,7 +254,7 @@ mod tests {
 		config.add_user("alice", false, false);
 		config.skip_repo("alice/zzz");
 		config.skip_repo("alice/aaa");
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		let aaa_pos = out.find("alice/aaa").unwrap();
 		let zzz_pos = out.find("alice/zzz").unwrap();
 		assert!(aaa_pos < zzz_pos, "got: {out}");
@@ -252,7 +264,7 @@ mod tests {
 	fn list_shows_pinned_section() {
 		let mut config = Config::default();
 		config.pin_repo("rust-lang/mdBook");
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(out.contains("rust-lang/mdBook"), "got: {out}");
 		assert!(out.to_lowercase().contains("pinned"), "got: {out}");
 	}
@@ -262,7 +274,7 @@ mod tests {
 		let mut config = Config::default();
 		config.pin_repo("rust-lang/zzz");
 		config.pin_repo("rust-lang/aaa");
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		let aaa_pos = out.find("rust-lang/aaa").unwrap();
 		let zzz_pos = out.find("rust-lang/zzz").unwrap();
 		assert!(aaa_pos < zzz_pos, "got: {out}");
@@ -272,7 +284,7 @@ mod tests {
 	fn list_omits_pinned_section_when_none() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false);
-		let out = format_list(&config);
+		let out = format_list(&config, None);
 		assert!(!out.to_lowercase().contains("pinned"), "got: {out}");
 	}
 
