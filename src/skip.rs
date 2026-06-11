@@ -32,7 +32,7 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 			let key = format!("{canonical_user}/{name}");
 			if config.skip_repo(&key) {
 				println!("Skipping {key}.");
-			} else {
+			} else if !delete_dir {
 				println!("Already skipping {key}. Run 'gitkeep unskip {key}' to stop.");
 			}
 			if delete_dir {
@@ -80,6 +80,47 @@ fn unskip_one(config: &mut Config, repo: &str) -> Result<()> {
 		println!("No longer skipping {repo}.");
 	} else {
 		println!("'{repo}' is not currently skipped.");
+	}
+	Ok(())
+}
+
+pub fn prune(yes: bool) -> Result<()> {
+	let config = Config::load()?;
+	let archive_dir = config.archive_dir()?;
+
+	let mut to_delete: Vec<std::path::PathBuf> = config
+		.skipped
+		.iter()
+		.filter_map(|full_name| {
+			let (user, name) = full_name.split_once('/')?;
+			let path = archive_dir.join(user).join(name);
+			path.exists().then_some(path)
+		})
+		.collect();
+	to_delete.sort();
+
+	if to_delete.is_empty() {
+		println!("Nothing to prune.");
+		return Ok(());
+	}
+
+	if !yes {
+		println!("The following local repos will be deleted:");
+		for path in &to_delete {
+			println!("  {}", path.display());
+		}
+		if !crate::utils::confirm(
+			&format!("Delete {} local {}?", to_delete.len(), if to_delete.len() == 1 { "repo" } else { "repos" }),
+			false,
+		)? {
+			println!("Aborted.");
+			return Ok(());
+		}
+	}
+
+	for path in &to_delete {
+		println!("Deleting {}...", path.display());
+		fs::remove_dir_all(path)?;
 	}
 	Ok(())
 }

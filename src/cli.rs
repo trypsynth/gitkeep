@@ -49,6 +49,12 @@ pub enum Commands {
 		#[arg(short, long)]
 		delete: bool,
 	},
+	/// Delete local copies of all skipped repos
+	Prune {
+		/// Skip the confirmation prompt
+		#[arg(short, long)]
+		yes: bool,
+	},
 	/// Show all tracked users and orgs
 	#[command(alias = "ls")]
 	List,
