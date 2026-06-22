@@ -106,10 +106,12 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 			}
 		} else {
 			// User format: existing behavior
+			let canonical = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone());
 			if config.remove_user(target) {
 				changed = true;
 
-				let user_dir = archive_root.join(target);
+				let dir_name = canonical.as_deref().unwrap_or(target);
+				let user_dir = archive_root.join(dir_name);
 				if user_dir.exists() {
 					let should_delete =
 						if delete_dir { true } else { confirm(&format!("Delete local archive for {target}?"), false)? };
