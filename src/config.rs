@@ -1,6 +1,6 @@
 use std::{
 	collections::{HashMap, HashSet},
-	fs,
+	fs, mem,
 	path::PathBuf,
 };
 
@@ -240,7 +240,7 @@ impl State {
 	}
 
 	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
-		std::mem::take(&mut self.skipped)
+		mem::take(&mut self.skipped)
 	}
 }
 

@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -87,8 +87,7 @@ fn unskip_one(config: &mut Config, repo: &str) -> Result<()> {
 pub fn prune(yes: bool) -> Result<()> {
 	let config = Config::load()?;
 	let archive_dir = config.archive_dir()?;
-
-	let mut to_delete: Vec<(&str, std::path::PathBuf)> = config
+	let mut to_delete: Vec<(&str, PathBuf)> = config
 		.skipped
 		.iter()
 		.filter_map(|full_name| {
@@ -98,12 +97,10 @@ pub fn prune(yes: bool) -> Result<()> {
 		})
 		.collect();
 	to_delete.sort_by_key(|(name, _)| *name);
-
 	if to_delete.is_empty() {
 		println!("Nothing to prune.");
 		return Ok(());
 	}
-
 	if !yes {
 		println!("The following local repos will be deleted:");
 		for (name, _) in &to_delete {
@@ -117,7 +114,6 @@ pub fn prune(yes: bool) -> Result<()> {
 			return Ok(());
 		}
 	}
-
 	for (name, path) in &to_delete {
 		println!("Deleting {name}...");
 		fs::remove_dir_all(path)?;

@@ -1,4 +1,4 @@
-use std::{fmt::Write as _, fs};
+use std::{fmt::Write as _, fs, path::Path};
 
 use anyhow::{Result, bail};
 use octocrab::Octocrab;
@@ -128,7 +128,7 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 	Ok(())
 }
 
-fn format_list(config: &Config, archive_dir: Option<&std::path::Path>) -> String {
+fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 	let mut out = String::new();
 	if config.track.is_empty() && config.pinned.is_empty() {
 		return "No users tracked. Use 'gitkeep add <username>' to start.\n".to_string();

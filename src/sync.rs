@@ -4,6 +4,7 @@ use std::{
 	fs,
 	path::Path,
 	process::{Command, Stdio},
+	string::ToString,
 };
 
 use anyhow::{Context, Result, bail};
@@ -627,7 +628,7 @@ async fn fetch_public(client: &Octocrab, username: &str) -> Result<Vec<Repositor
 }
 
 fn clone_url(repo: &Repository, use_ssh: bool) -> Option<String> {
-	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(std::string::ToString::to_string) }
+	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(ToString::to_string) }
 }
 
 fn should_skip_pull(
