@@ -14,7 +14,7 @@ pub fn add(users: &[String], forks: bool, frozen: bool) -> Result<()> {
 		}
 		// Auto-remove any individually-pinned repos from this user — they're now covered.
 		for pin in config.remove_pins_for_user(user) {
-			println!("{pin} removed from pinned repos (now covered by {user}).");
+			println!("{pin} removed (now covered by {user}).");
 			changed = true;
 		}
 	}
@@ -102,7 +102,7 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 					}
 				}
 			} else {
-				println!("'{target}' is not pinned.");
+				println!("Not tracking '{target}'.");
 			}
 		} else {
 			// User format: existing behavior
@@ -155,7 +155,7 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 		if !out.is_empty() {
 			out.push('\n');
 		}
-		let _ = writeln!(out, "Pinned repos ({} total):", sorted.len());
+		let _ = writeln!(out, "Repos ({} total):", sorted.len());
 		for repo in sorted {
 			let _ = writeln!(out, "  {repo}");
 		}
@@ -268,7 +268,7 @@ mod tests {
 		config.pin_repo("rust-lang/mdBook");
 		let out = format_list(&config, None);
 		assert!(out.contains("rust-lang/mdBook"), "got: {out}");
-		assert!(out.to_lowercase().contains("pinned"), "got: {out}");
+		assert!(out.contains("Repos ("), "got: {out}");
 	}
 
 	#[test]
@@ -287,7 +287,7 @@ mod tests {
 		let mut config = Config::default();
 		config.add_user("alice", false, false);
 		let out = format_list(&config, None);
-		assert!(!out.to_lowercase().contains("pinned"), "got: {out}");
+		assert!(!out.contains("Repos ("), "got: {out}");
 	}
 
 	#[test]
