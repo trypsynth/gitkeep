@@ -68,6 +68,7 @@ pub async fn run(
 	let pinned_to_sync: Vec<String> = config
 		.pinned
 		.iter()
+		.map(|p| &p.full_name)
 		.filter(|p| p.split_once('/').is_some_and(|(u, _)| !tracked_names.iter().any(|t| t.eq_ignore_ascii_case(u))))
 		.cloned()
 		.collect();
@@ -137,7 +138,7 @@ async fn sync_all(
 		}
 	}
 	for full_name in pinned {
-		sync_one_pinned(
+		let renamed = sync_one_pinned(
 			full_name,
 			pull_only,
 			new_only,
@@ -149,6 +150,9 @@ async fn sync_all(
 			&mut totals,
 		)
 		.await;
+		if renamed {
+			config_changed = true;
+		}
 	}
 	state.save().context("Could not save sync state")?;
 	if config_changed {
@@ -348,23 +352,36 @@ async fn sync_one(
 	if verbosity == Verbosity::Verbose {
 		println!("Checking {}...", user.name);
 	}
-	let account = fetch_account(client, &user.name).await;
+	let mut account = fetch_account(client, &user.name).await;
+	if account.is_none()
+		&& let Some(id) = user.id
+	{
+		// The name-based lookup 404d; the account may have been renamed. Its stable id
+		// still resolves to the current login regardless of how many times it's changed.
+		account = fetch_account_by_id(client, id).await;
+	}
 	let canonical = account.as_ref().map_or_else(|| user.name.clone(), |a| a.login.clone());
-	let is_org = account.is_some_and(|a| a.account_type == "Organization");
+	let is_org = account.as_ref().is_some_and(|a| a.account_type == "Organization");
 
 	let mut config_changed = false;
-	if canonical != user.name {
-		let old_dir = archive_dir.join(&user.name);
-		let new_dir = archive_dir.join(&canonical);
-		if old_dir.exists()
-			&& !new_dir.exists()
-			&& let Err(e) = fs::rename(&old_dir, &new_dir)
+	if let Some(entry) = config.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(&user.name)) {
+		if let Some(a) = &account
+			&& entry.id != Some(a.id)
 		{
-			eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
+			entry.id = Some(a.id);
+			config_changed = true;
 		}
-		if let Some(entry) = config.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(&user.name)) {
+		if canonical != entry.name {
+			let old_dir = archive_dir.join(&entry.name);
+			let new_dir = archive_dir.join(&canonical);
+			if old_dir.exists()
+				&& !new_dir.exists()
+				&& let Err(e) = fs::rename(&old_dir, &new_dir)
+			{
+				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
+			}
 			if verbosity != Verbosity::Quiet {
-				println!("Corrected username casing: {} → {}", entry.name, canonical);
+				println!("Username updated: {} → {}", entry.name, canonical);
 			}
 			entry.name.clone_from(&canonical);
 			config_changed = true;
@@ -428,23 +445,59 @@ async fn sync_one_pinned(
 	verbosity: Verbosity,
 	client: &Octocrab,
 	archive_dir: &Path,
-	config: &Config,
+	config: &mut Config,
 	state: &mut State,
 	totals: &mut Totals,
-) {
-	let Some((user, name)) = full_name.split_once('/') else { return };
+) -> bool {
+	let Some((user, name)) = full_name.split_once('/') else { return false };
 	if verbosity == Verbosity::Verbose {
 		println!("Checking {full_name}...");
 	}
-	match client.repos(user, name).get().await {
-		Ok(repo) => {
-			sync_repo_list(vec![repo], user, true, pull_only, new_only, verbosity, archive_dir, config, state, totals);
-		}
-		Err(e) => {
-			eprintln!("  Could not fetch {full_name}: {e:#}.");
-			totals.failed += 1;
-		}
+	let stored_id = config.pinned_id(full_name);
+	let mut repo = client.repos(user, name).get().await.ok();
+	if repo.is_none()
+		&& let Some(id) = stored_id
+	{
+		// The owner/repo lookup 404d; the repo or its owner may have been renamed. Its
+		// stable id still resolves to the current owner/name regardless.
+		repo = fetch_repo_by_id(client, id).await;
 	}
+	let Some(repo) = repo else {
+		eprintln!("  Could not fetch {full_name}.");
+		totals.failed += 1;
+		return false;
+	};
+
+	let mut config_changed = false;
+	let repo_id = repo.id.into_inner();
+	let repo_full_name = repo.full_name.clone().unwrap_or_else(|| full_name.to_string());
+	if repo_full_name != full_name {
+		if let Some((new_user, new_name)) = repo_full_name.split_once('/') {
+			let old_dir = archive_dir.join(user).join(name);
+			let new_dir = archive_dir.join(new_user).join(new_name);
+			if old_dir.exists()
+				&& !new_dir.exists()
+				&& let Err(e) = fs::rename(&old_dir, &new_dir)
+			{
+				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
+			}
+		}
+		if verbosity != Verbosity::Quiet {
+			println!("Pinned repo updated: {full_name} → {repo_full_name}");
+		}
+		config.rename_pin(full_name, &repo_full_name);
+		config_changed = true;
+	}
+	if stored_id != Some(repo_id)
+		&& let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name == repo_full_name)
+	{
+		pin.id = Some(repo_id);
+		config_changed = true;
+	}
+
+	let owner = repo_full_name.split_once('/').map_or_else(|| user.to_string(), |(u, _)| u.to_string());
+	sync_repo_list(vec![repo], &owner, true, pull_only, new_only, verbosity, archive_dir, config, state, totals);
+	config_changed
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -589,12 +642,25 @@ async fn fetch_authenticated(client: &Octocrab, username: &str) -> Result<Vec<Re
 #[derive(Deserialize)]
 struct AccountInfo {
 	login: String,
+	id: u64,
 	#[serde(rename = "type")]
 	account_type: String,
 }
 
 async fn fetch_account(client: &Octocrab, name: &str) -> Option<AccountInfo> {
 	client.get(format!("/users/{name}"), None::<&()>).await.ok()
+}
+
+/// Resolves an account by its stable numeric id, which survives username renames
+/// (unlike `/users/{name}`, which 404s once the old name is gone).
+async fn fetch_account_by_id(client: &Octocrab, id: u64) -> Option<AccountInfo> {
+	client.get(format!("/user/{id}"), None::<&()>).await.ok()
+}
+
+/// Resolves a repository by its stable numeric id, which survives owner and repo renames
+/// (unlike `/repos/{owner}/{name}`, which 404s once the old owner/name is gone).
+async fn fetch_repo_by_id(client: &Octocrab, id: u64) -> Option<Repository> {
+	client.get(format!("/repositories/{id}"), None::<&()>).await.ok()
 }
 
 pub async fn resolve_login(client: &Octocrab, name: &str) -> Result<String> {

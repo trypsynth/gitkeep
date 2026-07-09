@@ -43,7 +43,7 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 		}
 
 		// Conflict: repo is individually pinned.
-		if config.pinned.iter().any(|p| p.eq_ignore_ascii_case(repo_str)) {
+		if config.pinned.iter().any(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
 			bail!(
 				"'{repo_str}' is currently pinned. Run 'gitkeep remove {repo_str}' to stop \
 				 tracking it instead."

@@ -45,8 +45,8 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab) -> Result<Vec<Strin
 		}
 
 		// Case-insensitive duplicate-pin check (before hitting the API).
-		if let Some(existing) = config.pinned.iter().find(|p| p.eq_ignore_ascii_case(repo_str)) {
-			println!("Already tracking {}.", existing.clone());
+		if let Some(existing) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
+			println!("Already tracking {}.", existing.full_name.clone());
 			continue;
 		}
 
@@ -56,8 +56,8 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab) -> Result<Vec<Strin
 		}
 
 		// Verify the repo exists on GitHub and get canonical casing.
-		let full_name = match client.repos(user, name).get().await {
-			Ok(r) => r.full_name.unwrap_or_else(|| repo_str.clone()),
+		let (full_name, id) = match client.repos(user, name).get().await {
+			Ok(r) => (r.full_name.unwrap_or_else(|| repo_str.clone()), r.id.into_inner()),
 			Err(_) => bail!("'{repo_str}' does not exist on GitHub."),
 		};
 
@@ -70,7 +70,7 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab) -> Result<Vec<Strin
 			bail!("'{full_name}' is currently skipped. Run 'gitkeep unskip {full_name}' first.");
 		}
 
-		config.pin_repo(&full_name);
+		config.pin_repo_with_id(&full_name, Some(id));
 		println!("Now tracking {full_name}.");
 		newly_pinned.push(full_name);
 	}
@@ -150,7 +150,7 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 		}
 	}
 	if !config.pinned.is_empty() {
-		let mut sorted: Vec<&String> = config.pinned.iter().collect();
+		let mut sorted: Vec<&String> = config.pinned.iter().map(|p| &p.full_name).collect();
 		sorted.sort();
 		if !out.is_empty() {
 			out.push('\n');
@@ -203,7 +203,7 @@ mod tests {
 	#[test]
 	fn list_pinned_only_does_not_show_hint() {
 		let mut config = Config::default();
-		config.pin_repo("alice/repo");
+		config.pin_repo_with_id("alice/repo", None);
 		let out = format_list(&config, None);
 		assert!(!out.contains("gitkeep add"), "got: {out}");
 	}
@@ -265,7 +265,7 @@ mod tests {
 	#[test]
 	fn list_shows_pinned_section() {
 		let mut config = Config::default();
-		config.pin_repo("rust-lang/mdBook");
+		config.pin_repo_with_id("rust-lang/mdBook", None);
 		let out = format_list(&config, None);
 		assert!(out.contains("rust-lang/mdBook"), "got: {out}");
 		assert!(out.contains("Repos ("), "got: {out}");
@@ -274,8 +274,8 @@ mod tests {
 	#[test]
 	fn list_pinned_repos_are_sorted() {
 		let mut config = Config::default();
-		config.pin_repo("rust-lang/zzz");
-		config.pin_repo("rust-lang/aaa");
+		config.pin_repo_with_id("rust-lang/zzz", None);
+		config.pin_repo_with_id("rust-lang/aaa", None);
 		let out = format_list(&config, None);
 		let aaa_pos = out.find("rust-lang/aaa").unwrap();
 		let zzz_pos = out.find("rust-lang/zzz").unwrap();
@@ -293,9 +293,9 @@ mod tests {
 	#[test]
 	fn add_user_removes_pins_for_that_user() {
 		let mut config = Config::default();
-		config.pin_repo("alice/foo");
-		config.pin_repo("alice/bar");
-		config.pin_repo("bob/baz");
+		config.pin_repo_with_id("alice/foo", None);
+		config.pin_repo_with_id("alice/bar", None);
+		config.pin_repo_with_id("bob/baz", None);
 		config.add_user("alice", false, false);
 		let pins_removed = config.remove_pins_for_user("alice");
 		assert_eq!(pins_removed.len(), 2);
