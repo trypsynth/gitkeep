@@ -26,6 +26,10 @@ pub struct Config {
 	/// per-account or per-pin by `TrackedUser.submodules` / `PinnedRepo.submodules`.
 	#[serde(default)]
 	pub submodules: bool,
+	/// Global default for whether `add` should skip cloning immediately after adding.
+	/// Overridden per-invocation by `--sync` / `--no-sync`.
+	#[serde(default)]
+	pub no_sync: bool,
 	#[serde(default)]
 	pub track: Vec<TrackedUser>,
 	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
