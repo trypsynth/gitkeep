@@ -23,6 +23,15 @@ pub enum Verbosity {
 	Verbose,
 }
 
+#[derive(Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct SyncOptions {
+	pub force_forks: bool,
+	pub force_submodules: bool,
+	pub pull_only: bool,
+	pub new_only: bool,
+}
+
 #[derive(Default)]
 struct Totals {
 	pulled_updated: usize,
@@ -35,17 +44,11 @@ struct Totals {
 	new_repos: Vec<String>,
 }
 
-pub async fn run(
-	extra_users: &[String],
-	force_forks: bool,
-	pull_only: bool,
-	new_only: bool,
-	verbosity: Verbosity,
-) -> Result<()> {
+pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
 	for user in extra_users {
-		if config.add_user(user, false, false) {
+		if config.add_user(user, false, false, None) {
 			updated = true;
 		}
 	}
@@ -72,10 +75,10 @@ pub async fn run(
 		.filter(|p| p.split_once('/').is_some_and(|(u, _)| !tracked_names.iter().any(|t| t.eq_ignore_ascii_case(u))))
 		.cloned()
 		.collect();
-	sync_all(&mut config, &to_sync, &pinned_to_sync, force_forks, pull_only, new_only, verbosity).await
+	sync_all(&mut config, &to_sync, &pinned_to_sync, opts, verbosity).await
 }
 
-pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
+pub async fn run_for(targets: &[String], opts: SyncOptions) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let to_sync: Vec<TrackedUser> =
 		config.track.iter().filter(|u| targets.iter().any(|t| t.eq_ignore_ascii_case(&u.name))).cloned().collect();
@@ -83,7 +86,7 @@ pub async fn run_for(targets: &[String], force_forks: bool) -> Result<()> {
 		println!("No matching users found to sync.");
 		return Ok(());
 	}
-	sync_all(&mut config, &to_sync, &[], force_forks, false, false, Verbosity::Normal).await
+	sync_all(&mut config, &to_sync, &[], opts, Verbosity::Normal).await
 }
 
 /// Syncs a specific set of pinned repos (used right after `gitkeep add user/repo`).
@@ -92,17 +95,14 @@ pub async fn run_pinned(repos: &[String]) -> Result<()> {
 		return Ok(());
 	}
 	let mut config = Config::load().context("Could not load config")?;
-	sync_all(&mut config, &[], repos, false, false, false, Verbosity::Normal).await
+	sync_all(&mut config, &[], repos, SyncOptions::default(), Verbosity::Normal).await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn sync_all(
 	config: &mut Config,
 	users: &[TrackedUser],
 	pinned: &[String],
-	force_forks: bool,
-	pull_only: bool,
-	new_only: bool,
+	opts: SyncOptions,
 	verbosity: Verbosity,
 ) -> Result<()> {
 	let client = config.build_client()?;
@@ -119,37 +119,15 @@ async fn sync_all(
 	let mut config_changed = false;
 	for user in users {
 		if seen.insert(user.name.as_str()) {
-			let renamed = sync_one(
-				user,
-				force_forks,
-				pull_only,
-				new_only,
-				verbosity,
-				&client,
-				&archive_dir,
-				config,
-				&mut state,
-				&mut totals,
-			)
-			.await;
+			let renamed = sync_one(user, opts, verbosity, &client, &archive_dir, config, &mut state, &mut totals).await;
 			if renamed {
 				config_changed = true;
 			}
 		}
 	}
 	for full_name in pinned {
-		let renamed = sync_one_pinned(
-			full_name,
-			pull_only,
-			new_only,
-			verbosity,
-			&client,
-			&archive_dir,
-			config,
-			&mut state,
-			&mut totals,
-		)
-		.await;
+		let renamed =
+			sync_one_pinned(full_name, opts, verbosity, &client, &archive_dir, config, &mut state, &mut totals).await;
 		if renamed {
 			config_changed = true;
 		}
@@ -253,6 +231,23 @@ mod tests {
 	}
 
 	#[test]
+	fn resolve_submodules_uses_global_default_when_no_override_or_force() {
+		assert!(resolve_submodules(false, None, true));
+		assert!(!resolve_submodules(false, None, false));
+	}
+
+	#[test]
+	fn resolve_submodules_override_beats_global_default() {
+		assert!(resolve_submodules(false, Some(true), false));
+		assert!(!resolve_submodules(false, Some(false), true));
+	}
+
+	#[test]
+	fn resolve_submodules_force_beats_everything() {
+		assert!(resolve_submodules(true, Some(false), false));
+	}
+
+	#[test]
 	fn pull_when_neither_pushed_at() {
 		assert!(!should_skip_pull(None, None));
 	}
@@ -339,9 +334,7 @@ mod tests {
 #[allow(clippy::too_many_arguments)]
 async fn sync_one(
 	user: &TrackedUser,
-	force_forks: bool,
-	pull_only: bool,
-	new_only: bool,
+	opts: SyncOptions,
 	verbosity: Verbosity,
 	client: &Octocrab,
 	archive_dir: &Path,
@@ -401,7 +394,8 @@ async fn sync_one(
 	};
 	match repos_result {
 		Ok(repos) => {
-			let include_forks = force_forks || user.forks;
+			let include_forks = opts.force_forks || user.forks;
+			let use_submodules = resolve_submodules(opts.force_submodules, user.submodules, config.submodules);
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
 			if verbosity == Verbosity::Verbose {
@@ -420,8 +414,8 @@ async fn sync_one(
 				repos,
 				&canonical,
 				include_forks,
-				pull_only,
-				new_only,
+				use_submodules,
+				opts,
 				verbosity,
 				archive_dir,
 				config,
@@ -440,8 +434,7 @@ async fn sync_one(
 #[allow(clippy::too_many_arguments)]
 async fn sync_one_pinned(
 	full_name: &str,
-	pull_only: bool,
-	new_only: bool,
+	opts: SyncOptions,
 	verbosity: Verbosity,
 	client: &Octocrab,
 	archive_dir: &Path,
@@ -454,6 +447,8 @@ async fn sync_one_pinned(
 		println!("Checking {full_name}...");
 	}
 	let stored_id = config.pinned_id(full_name);
+	let use_submodules =
+		resolve_submodules(opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
 	let mut repo = client.repos(user, name).get().await.ok();
 	if repo.is_none()
 		&& let Some(id) = stored_id
@@ -496,7 +491,7 @@ async fn sync_one_pinned(
 	}
 
 	let owner = repo_full_name.split_once('/').map_or_else(|| user.to_string(), |(u, _)| u.to_string());
-	sync_repo_list(vec![repo], &owner, true, pull_only, new_only, verbosity, archive_dir, config, state, totals);
+	sync_repo_list(vec![repo], &owner, true, use_submodules, opts, verbosity, archive_dir, config, state, totals);
 	config_changed
 }
 
@@ -505,8 +500,8 @@ fn sync_repo_list(
 	repos: Vec<Repository>,
 	username: &str,
 	include_forks: bool,
-	pull_only: bool,
-	new_only: bool,
+	use_submodules: bool,
+	opts: SyncOptions,
 	verbosity: Verbosity,
 	archive_dir: &Path,
 	config: &Config,
@@ -536,81 +531,143 @@ fn sync_repo_list(
 		};
 		let repo_dir = user_dir.join(name.as_str());
 		let already_cloned = repo_dir.exists();
-		if already_cloned && new_only {
+		if already_cloned && opts.new_only {
 			totals.excluded += 1;
 			continue;
 		}
-		if !already_cloned && pull_only {
+		if !already_cloned && opts.pull_only {
 			totals.excluded += 1;
 			continue;
 		}
 		let repo_pushed_at = repo.pushed_at;
 		if already_cloned {
-			let state_pushed_at = state.repos.get(full_name).and_then(|s| s.pushed_at);
-			if should_skip_pull(repo_pushed_at, state_pushed_at) {
-				totals.pulled_up_to_date += 1;
-				continue;
-			}
-			if verbosity == Verbosity::Verbose {
-				println!("Pulling {username}/{name}...");
-			}
-			match git_pull(&repo_dir, verbosity) {
-				PullOutcome::Updated => {
-					state.mark_synced(full_name, repo_pushed_at);
-					if verbosity == Verbosity::Normal {
-						totals.updated_repos.push(format!("{username}/{name}"));
-					}
-					totals.pulled_updated += 1;
-				}
-				PullOutcome::UpToDate => {
-					state.mark_synced(full_name, repo_pushed_at);
-					totals.pulled_up_to_date += 1;
-				}
-				PullOutcome::Fatal => {
-					if verbosity == Verbosity::Verbose {
-						println!("  Pull failed for {username}/{name} (exit 128), re-cloning...");
-					}
-					if let Err(e) = fs::remove_dir_all(&repo_dir) {
-						eprintln!("  Could not remove {}: {e}.", repo_dir.display());
-						totals.failed += 1;
-						continue;
-					}
-					match git_clone(&url, &repo_dir, verbosity) {
-						Ok(()) => {
-							state.mark_synced(full_name, repo_pushed_at);
-							if verbosity == Verbosity::Normal {
-								totals.new_repos.push(format!("{username}/{name}"));
-							}
-							totals.cloned += 1;
-						}
-						Err(e) => {
-							eprintln!("  Failed to re-clone {username}/{name}: {e:#}.");
-							totals.failed += 1;
-						}
-					}
-				}
-				PullOutcome::Failed(e) => {
-					eprintln!("  Failed to pull {username}/{name}: {e:#}.");
-					totals.failed += 1;
-				}
-			}
+			pull_and_record(
+				&repo_dir,
+				&url,
+				use_submodules,
+				verbosity,
+				username,
+				name,
+				full_name,
+				repo_pushed_at,
+				state,
+				totals,
+			);
 		} else {
 			if verbosity == Verbosity::Verbose {
 				println!("Cloning {username}/{name}...");
 			}
-			match git_clone(&url, &repo_dir, verbosity) {
-				Ok(()) => {
-					state.mark_synced(full_name, repo_pushed_at);
-					if verbosity == Verbosity::Normal {
-						totals.new_repos.push(format!("{username}/{name}"));
-					}
-					totals.cloned += 1;
-				}
-				Err(e) => {
-					eprintln!("  Failed to clone {username}/{name}: {e:#}.");
-					totals.failed += 1;
-				}
+			clone_and_record(
+				&url,
+				&repo_dir,
+				use_submodules,
+				verbosity,
+				"clone",
+				username,
+				name,
+				full_name,
+				repo_pushed_at,
+				state,
+				totals,
+			);
+		}
+	}
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pull_and_record(
+	repo_dir: &Path,
+	url: &str,
+	use_submodules: bool,
+	verbosity: Verbosity,
+	username: &str,
+	name: &str,
+	full_name: &str,
+	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+	state: &mut State,
+	totals: &mut Totals,
+) {
+	let state_pushed_at = state.repos.get(full_name).and_then(|s| s.pushed_at);
+	if should_skip_pull(repo_pushed_at, state_pushed_at) {
+		totals.pulled_up_to_date += 1;
+		return;
+	}
+	if verbosity == Verbosity::Verbose {
+		println!("Pulling {username}/{name}...");
+	}
+	match git_pull(repo_dir, verbosity) {
+		PullOutcome::Updated => {
+			state.mark_synced(full_name, repo_pushed_at);
+			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
+				eprintln!("  Could not update submodules for {username}/{name}: {e:#}.");
 			}
+			if verbosity == Verbosity::Normal {
+				totals.updated_repos.push(format!("{username}/{name}"));
+			}
+			totals.pulled_updated += 1;
+		}
+		PullOutcome::UpToDate => {
+			state.mark_synced(full_name, repo_pushed_at);
+			totals.pulled_up_to_date += 1;
+		}
+		PullOutcome::Fatal => {
+			if verbosity == Verbosity::Verbose {
+				println!("  Pull failed for {username}/{name} (exit 128), re-cloning...");
+			}
+			if let Err(e) = fs::remove_dir_all(repo_dir) {
+				eprintln!("  Could not remove {}: {e}.", repo_dir.display());
+				totals.failed += 1;
+				return;
+			}
+			clone_and_record(
+				url,
+				repo_dir,
+				use_submodules,
+				verbosity,
+				"re-clone",
+				username,
+				name,
+				full_name,
+				repo_pushed_at,
+				state,
+				totals,
+			);
+		}
+		PullOutcome::Failed(e) => {
+			eprintln!("  Failed to pull {username}/{name}: {e:#}.");
+			totals.failed += 1;
+		}
+	}
+}
+
+#[allow(clippy::too_many_arguments)]
+fn clone_and_record(
+	url: &str,
+	repo_dir: &Path,
+	use_submodules: bool,
+	verbosity: Verbosity,
+	action: &str,
+	username: &str,
+	name: &str,
+	full_name: &str,
+	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+	state: &mut State,
+	totals: &mut Totals,
+) {
+	match git_clone(url, repo_dir, verbosity) {
+		Ok(()) => {
+			state.mark_synced(full_name, repo_pushed_at);
+			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
+				eprintln!("  Could not clone submodules for {username}/{name}: {e:#}.");
+			}
+			if verbosity == Verbosity::Normal {
+				totals.new_repos.push(format!("{username}/{name}"));
+			}
+			totals.cloned += 1;
+		}
+		Err(e) => {
+			eprintln!("  Failed to {action} {username}/{name}: {e:#}.");
+			totals.failed += 1;
 		}
 	}
 }
@@ -707,6 +764,12 @@ fn should_skip_pull(
 	}
 }
 
+/// Resolves whether submodules should be cloned/updated, in priority order: an explicit
+/// one-off `--submodules` flag, then a per-account/per-pin override, then the global default.
+fn resolve_submodules(force: bool, override_: Option<bool>, global_default: bool) -> bool {
+	force || override_.unwrap_or(global_default)
+}
+
 fn git_head(repo_dir: &Path) -> Option<String> {
 	let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo_dir).output().ok()?;
 	if out.status.success() { Some(String::from_utf8_lossy(&out.stdout).trim().to_string()) } else { None }
@@ -771,6 +834,36 @@ fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {
 			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
 		if !out.status.success() {
 			bail!("git clone failed with code {}.", out.status.code().unwrap_or(-1));
+		}
+	}
+	Ok(())
+}
+
+/// Initializes and updates submodules to the commit recorded by the superproject. Idempotent,
+/// and a no-op if the repo has no `.gitmodules`, so it's safe to call after every clone/pull.
+fn update_submodules(repo_dir: &Path, verbosity: Verbosity) -> Result<()> {
+	if !repo_dir.join(".gitmodules").exists() {
+		return Ok(());
+	}
+	if verbosity == Verbosity::Verbose {
+		let status = Command::new("git")
+			.args(["submodule", "update", "--init", "--recursive"])
+			.current_dir(repo_dir)
+			.status()
+			.context("Could not run 'git submodule update'. Is git installed and on your PATH?")?;
+		if !status.success() {
+			bail!("git submodule update failed with code {}.", status.code().unwrap_or(-1));
+		}
+	} else {
+		let out = Command::new("git")
+			.args(["submodule", "update", "--init", "--recursive"])
+			.current_dir(repo_dir)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.output()
+			.context("Could not run 'git submodule update'. Is git installed and on your PATH?")?;
+		if !out.status.success() {
+			bail!("git submodule update failed with code {}.", out.status.code().unwrap_or(-1));
 		}
 	}
 	Ok(())

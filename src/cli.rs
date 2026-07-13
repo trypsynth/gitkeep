@@ -23,6 +23,12 @@ pub enum Commands {
 		/// Do not update these accounts in bulk runs after the initial clone
 		#[arg(long)]
 		frozen: bool,
+		/// Clone submodules for these accounts/repos, overriding the global default
+		#[arg(long, conflicts_with = "no_submodules")]
+		submodules: bool,
+		/// Never clone submodules for these accounts/repos, overriding the global default
+		#[arg(long, conflicts_with = "submodules")]
+		no_submodules: bool,
 		/// Add to the tracked list without cloning right now
 		#[arg(long)]
 		no_sync: bool,
@@ -67,6 +73,9 @@ pub enum Commands {
 		/// Include forked repositories for this sync only (does not save to config)
 		#[arg(long)]
 		forks: bool,
+		/// Clone submodules for this sync only (does not save to config)
+		#[arg(long)]
+		submodules: bool,
 		/// Only pull existing repos; skip checking for new ones
 		#[arg(short = 'p', long)]
 		pull_only: bool,

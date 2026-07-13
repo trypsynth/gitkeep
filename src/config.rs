@@ -22,6 +22,10 @@ pub struct Config {
 	pub archive_dir: Option<String>,
 	#[serde(default)]
 	pub use_ssh: bool,
+	/// Global default for whether to recurse into submodules on clone/pull. Overridden
+	/// per-account or per-pin by `TrackedUser.submodules` / `PinnedRepo.submodules`.
+	#[serde(default)]
+	pub submodules: bool,
 	#[serde(default)]
 	pub track: Vec<TrackedUser>,
 	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
@@ -40,11 +44,14 @@ pub struct TrackedUser {
 	/// Stable GitHub account id, used to re-resolve the account if it gets renamed.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
+	/// Overrides the global `submodules` default for this account. `None` inherits it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub submodules: Option<bool>,
 }
 
 impl TrackedUser {
 	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
-		Self { name: name.into(), forks, frozen, id: None }
+		Self { name: name.into(), forks, frozen, id: None, submodules: None }
 	}
 }
 
@@ -54,6 +61,9 @@ pub struct PinnedRepo {
 	/// Stable GitHub repository id, used to re-resolve the repo if it or its owner gets renamed.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
+	/// Overrides the global `submodules` default for this pin. `None` inherits it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub submodules: Option<bool>,
 }
 
 // Accepts both the legacy bare-string form (`pinned = ["user/repo"]`) and the current
@@ -72,11 +82,13 @@ impl<'de> Deserialize<'de> for PinnedRepo {
 				full_name: String,
 				#[serde(default)]
 				id: Option<u64>,
+				#[serde(default)]
+				submodules: Option<bool>,
 			},
 		}
 		Ok(match Repr::deserialize(deserializer)? {
-			Repr::Legacy(full_name) => Self { full_name, id: None },
-			Repr::Full { full_name, id } => Self { full_name, id },
+			Repr::Legacy(full_name) => Self { full_name, id: None, submodules: None },
+			Repr::Full { full_name, id, submodules } => Self { full_name, id, submodules },
 		})
 	}
 }
@@ -127,7 +139,7 @@ impl Config {
 		)
 	}
 
-	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool) -> bool {
+	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool, submodules: Option<bool>) -> bool {
 		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user)) {
 			let canonical_changed = if entry.name == user {
 				false
@@ -154,12 +166,21 @@ impl Config {
 				local_changed = true;
 			}
 
+			if let Some(submodules) = submodules
+				&& entry.submodules != Some(submodules)
+			{
+				entry.submodules = Some(submodules);
+				println!("Submodules {} for {user}.", if submodules { "enabled" } else { "disabled" });
+				local_changed = true;
+			}
+
 			if !local_changed && !canonical_changed {
 				println!("Already tracking {user}.");
 			}
 			local_changed || canonical_changed
 		} else {
-			let entry = TrackedUser::with_options(user, forks, frozen);
+			let mut entry = TrackedUser::with_options(user, forks, frozen);
+			entry.submodules = submodules;
 			println!(
 				"Now tracking {}{}{}",
 				user,
@@ -207,12 +228,13 @@ impl Config {
 	}
 
 	/// Pins a repo, optionally recording its stable GitHub id (used to re-resolve it after a
-	/// rename). Returns `true` if this is a new pin, `false` if already pinned.
-	pub fn pin_repo_with_id(&mut self, full_name: &str, id: Option<u64>) -> bool {
+	/// rename) and a per-pin submodules override. Returns `true` if this is a new pin, `false`
+	/// if already pinned.
+	pub fn pin_repo_with_options(&mut self, full_name: &str, id: Option<u64>, submodules: Option<bool>) -> bool {
 		if self.is_pinned(full_name) {
 			return false;
 		}
-		self.pinned.push(PinnedRepo { full_name: full_name.to_string(), id });
+		self.pinned.push(PinnedRepo { full_name: full_name.to_string(), id, submodules });
 		true
 	}
 
@@ -230,6 +252,11 @@ impl Config {
 	/// Returns the stored GitHub id for a pinned repo, if any.
 	pub fn pinned_id(&self, full_name: &str) -> Option<u64> {
 		self.pinned.iter().find(|p| p.full_name == full_name)?.id
+	}
+
+	/// Returns the per-pin submodules override, if any (`None` means inherit the global default).
+	pub fn pinned_submodules(&self, full_name: &str) -> Option<bool> {
+		self.pinned.iter().find(|p| p.full_name == full_name)?.submodules
 	}
 
 	/// Updates a pin's `full_name` in place (used when the owner or repo has been renamed).
@@ -394,27 +421,27 @@ mod tests {
 	#[test]
 	fn config_pin_repo_marks_as_pinned() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("user/repo", None);
+		config.pin_repo_with_options("user/repo", None, None);
 		assert!(config.is_pinned("user/repo"));
 	}
 
 	#[test]
 	fn config_pin_repo_returns_true_for_new_pin() {
 		let mut config = Config::default();
-		assert!(config.pin_repo_with_id("user/repo", None));
+		assert!(config.pin_repo_with_options("user/repo", None, None));
 	}
 
 	#[test]
 	fn config_pin_repo_returns_false_for_duplicate() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("user/repo", None);
-		assert!(!config.pin_repo_with_id("user/repo", None));
+		config.pin_repo_with_options("user/repo", None, None);
+		assert!(!config.pin_repo_with_options("user/repo", None, None));
 	}
 
 	#[test]
 	fn config_unpin_repo_returns_true_when_was_pinned() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("user/repo", None);
+		config.pin_repo_with_options("user/repo", None, None);
 		assert!(config.unpin_repo("user/repo"));
 	}
 
@@ -435,6 +462,95 @@ mod tests {
 		let repo: PinnedRepo = toml::Value::String("alice/repo".to_string()).try_into().unwrap();
 		assert_eq!(repo.full_name, "alice/repo");
 		assert_eq!(repo.id, None);
+	}
+
+	#[test]
+	fn tracked_user_submodules_defaults_to_none_for_legacy_toml() {
+		let user: TrackedUser = toml::from_str(r#"name = "alice""#).unwrap();
+		assert_eq!(user.submodules, None);
+	}
+
+	#[test]
+	fn tracked_user_submodules_round_trips() {
+		let user = TrackedUser { submodules: Some(true), ..TrackedUser::with_options("alice", false, false) };
+		let raw = toml::to_string(&user).unwrap();
+		let back: TrackedUser = toml::from_str(&raw).unwrap();
+		assert_eq!(back.submodules, Some(true));
+	}
+
+	#[test]
+	fn add_user_sets_submodules_override_on_new_entry() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, Some(true));
+		assert_eq!(config.track[0].submodules, Some(true));
+	}
+
+	#[test]
+	fn add_user_leaves_submodules_unset_when_not_specified() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		assert_eq!(config.track[0].submodules, None);
+	}
+
+	#[test]
+	fn add_user_updates_submodules_override_on_existing_entry() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		let changed = config.add_user("alice", false, false, Some(false));
+		assert!(changed);
+		assert_eq!(config.track[0].submodules, Some(false));
+	}
+
+	#[test]
+	fn add_user_no_change_when_submodules_override_already_set() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, Some(true));
+		let changed = config.add_user("alice", false, false, Some(true));
+		assert!(!changed);
+	}
+
+	#[test]
+	fn pin_repo_with_options_stores_submodules_override() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("alice/repo", None, Some(true));
+		assert_eq!(config.pinned_submodules("alice/repo"), Some(true));
+	}
+
+	#[test]
+	fn pin_repo_with_options_leaves_submodules_unset_when_not_specified() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("alice/repo", None, None);
+		assert_eq!(config.pinned_submodules("alice/repo"), None);
+	}
+
+	#[test]
+	fn pinned_submodules_none_for_unknown_repo() {
+		let config = Config::default();
+		assert_eq!(config.pinned_submodules("alice/repo"), None);
+	}
+
+	#[test]
+	fn config_loads_legacy_pinned_string_array_with_no_submodules_override() {
+		let raw = r#"pinned = ["alice/repo"]"#;
+		let config: Config = toml::from_str(raw).unwrap();
+		assert_eq!(config.pinned_submodules("alice/repo"), None);
+	}
+
+	#[test]
+	fn config_loads_new_pinned_table_with_submodules_override() {
+		let raw = r#"
+			[[pinned]]
+			full_name = "alice/repo"
+			submodules = true
+		"#;
+		let config: Config = toml::from_str(raw).unwrap();
+		assert_eq!(config.pinned_submodules("alice/repo"), Some(true));
+	}
+
+	#[test]
+	fn config_submodules_defaults_to_false_for_legacy_toml() {
+		let config: Config = toml::from_str(r#"archive_dir = "/tmp/x""#).unwrap();
+		assert!(!config.submodules);
 	}
 
 	#[test]
@@ -461,9 +577,9 @@ mod tests {
 	#[test]
 	fn config_remove_pins_for_user_removes_matching() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/foo", None);
-		config.pin_repo_with_id("alice/bar", None);
-		config.pin_repo_with_id("bob/baz", None);
+		config.pin_repo_with_options("alice/foo", None, None);
+		config.pin_repo_with_options("alice/bar", None, None);
+		config.pin_repo_with_options("bob/baz", None, None);
 		let removed = config.remove_pins_for_user("alice");
 		assert_eq!(removed.len(), 2);
 		assert!(!config.is_pinned("alice/foo"));
@@ -474,7 +590,7 @@ mod tests {
 	#[test]
 	fn config_remove_pins_for_user_case_insensitive() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("Alice/foo", None);
+		config.pin_repo_with_options("Alice/foo", None, None);
 		let removed = config.remove_pins_for_user("alice");
 		assert_eq!(removed.len(), 1);
 		assert!(!config.is_pinned("Alice/foo"));
@@ -483,7 +599,7 @@ mod tests {
 	#[test]
 	fn config_remove_pins_for_user_returns_empty_when_none() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("bob/baz", None);
+		config.pin_repo_with_options("bob/baz", None, None);
 		let removed = config.remove_pins_for_user("alice");
 		assert!(removed.is_empty());
 	}
@@ -512,28 +628,28 @@ mod tests {
 	#[test]
 	fn pin_repo_stores_id() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/repo", Some(7));
+		config.pin_repo_with_options("alice/repo", Some(7), None);
 		assert_eq!(config.pinned_id("alice/repo"), Some(7));
 	}
 
 	#[test]
 	fn pin_repo_without_id_stores_none() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/repo", None);
+		config.pin_repo_with_options("alice/repo", None, None);
 		assert_eq!(config.pinned_id("alice/repo"), None);
 	}
 
 	#[test]
-	fn pin_repo_with_id_returns_false_for_duplicate_full_name() {
+	fn pin_repo_with_options_returns_false_for_duplicate_full_name() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/repo", None);
-		assert!(!config.pin_repo_with_id("alice/repo", Some(7)));
+		config.pin_repo_with_options("alice/repo", None, None);
+		assert!(!config.pin_repo_with_options("alice/repo", Some(7), None));
 	}
 
 	#[test]
 	fn rename_pin_updates_full_name_and_keeps_id() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/repo", Some(7));
+		config.pin_repo_with_options("alice/repo", Some(7), None);
 		assert!(config.rename_pin("alice/repo", "bob/repo"));
 		assert!(config.is_pinned("bob/repo"));
 		assert!(!config.is_pinned("alice/repo"));

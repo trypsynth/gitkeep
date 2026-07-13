@@ -29,7 +29,7 @@ pub async fn run() -> Result<()> {
 	println!("Authenticated as {}.", user.login);
 	let mut config = Config::load()?;
 	config.token = Some(token);
-	config.add_user(&user.login, false, false);
+	config.add_user(&user.login, false, false, None);
 	config.save()?;
 	println!("Token saved to {}.", Config::path()?.display());
 	Ok(())

@@ -22,8 +22,15 @@ async fn main() -> Result<()> {
 	match cli.command {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
-		Commands::Add { users, forks, frozen, no_sync } => {
+		Commands::Add { users, forks, frozen, submodules, no_submodules, no_sync } => {
 			let (repos, usernames): (Vec<String>, Vec<String>) = users.into_iter().partition(|s| s.contains('/'));
+			let submodules_override = if submodules {
+				Some(true)
+			} else if no_submodules {
+				Some(false)
+			} else {
+				None
+			};
 
 			// Handle plain usernames first so that if someone mixes both formats
 			// (e.g. `gitkeep add rust-lang rust-lang/mdBook`), the full-user tracking
@@ -39,9 +46,14 @@ async fn main() -> Result<()> {
 					}
 					resolved.push(canonical);
 				}
-				track::add(&resolved, forks, frozen)?;
+				track::add(&resolved, forks, frozen, submodules_override)?;
 				if !no_sync {
-					sync::run_for(&resolved, forks).await?;
+					let opts = sync::SyncOptions {
+						force_forks: forks,
+						force_submodules: submodules_override.unwrap_or(false),
+						..Default::default()
+					};
+					sync::run_for(&resolved, opts).await?;
 				}
 			}
 
@@ -49,7 +61,7 @@ async fn main() -> Result<()> {
 			if !repos.is_empty() {
 				let config = crate::config::Config::load()?;
 				let client = config.build_client()?;
-				let newly_pinned = track::add_pinned(&repos, &client).await?;
+				let newly_pinned = track::add_pinned(&repos, &client, submodules_override).await?;
 				if !no_sync {
 					sync::run_pinned(&newly_pinned).await?;
 				}
@@ -62,7 +74,7 @@ async fn main() -> Result<()> {
 		Commands::Unskip { repos } => skip::remove(&repos),
 		Commands::Remove { users, delete } => track::remove(&users, delete),
 		Commands::List => track::list(),
-		Commands::Sync { users, forks, pull_only, new_only, quiet, verbose } => {
+		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {
 			let verbosity = if quiet {
 				sync::Verbosity::Quiet
 			} else if verbose {
@@ -70,7 +82,8 @@ async fn main() -> Result<()> {
 			} else {
 				sync::Verbosity::Normal
 			};
-			sync::run(&users, forks, pull_only, new_only, verbosity).await
+			let opts = sync::SyncOptions { force_forks: forks, force_submodules: submodules, pull_only, new_only };
+			sync::run(&users, opts, verbosity).await
 		}
 	}
 }

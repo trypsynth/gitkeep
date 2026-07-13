@@ -22,10 +22,12 @@ pub fn run() -> Result<()> {
 		.prompt()
 		.map(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })?;
 	let use_ssh = confirm("Use SSH clone URLs?", existing.use_ssh)?;
+	let submodules = confirm("Clone submodules by default?", existing.submodules)?;
 	let config = Config {
 		token: existing.token,
 		archive_dir,
 		use_ssh,
+		submodules,
 		track: existing.track,
 		skipped: existing.skipped,
 		pinned: existing.pinned,

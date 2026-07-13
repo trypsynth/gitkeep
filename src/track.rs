@@ -5,11 +5,11 @@ use octocrab::Octocrab;
 
 use crate::{config::Config, utils::confirm};
 
-pub fn add(users: &[String], forks: bool, frozen: bool) -> Result<()> {
+pub fn add(users: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	for user in users {
-		if config.add_user(user, forks, frozen) {
+		if config.add_user(user, forks, frozen, submodules) {
 			changed = true;
 		}
 		// Auto-remove any individually-pinned repos from this user — they're now covered.
@@ -26,7 +26,7 @@ pub fn add(users: &[String], forks: bool, frozen: bool) -> Result<()> {
 
 /// Validates and pins individual repos (`user/repo` format). Returns the canonical names of
 /// newly-pinned repos so the caller can sync them.
-pub async fn add_pinned(repos: &[String], client: &Octocrab) -> Result<Vec<String>> {
+pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<bool>) -> Result<Vec<String>> {
 	let mut config = Config::load()?;
 	let mut newly_pinned: Vec<String> = Vec::new();
 
@@ -70,7 +70,7 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab) -> Result<Vec<Strin
 			bail!("'{full_name}' is currently skipped. Run 'gitkeep unskip {full_name}' first.");
 		}
 
-		config.pin_repo_with_id(&full_name, Some(id));
+		config.pin_repo_with_options(&full_name, Some(id), submodules);
 		println!("Now tracking {full_name}.");
 		newly_pinned.push(full_name);
 	}
@@ -145,19 +145,29 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 			if user.frozen {
 				tags.push("frozen");
 			}
+			match user.submodules {
+				Some(true) => tags.push("submodules"),
+				Some(false) => tags.push("no-submodules"),
+				None => {}
+			}
 			let suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags.join(", ")) };
 			let _ = writeln!(out, "  {}{}", user.name, suffix);
 		}
 	}
 	if !config.pinned.is_empty() {
-		let mut sorted: Vec<&String> = config.pinned.iter().map(|p| &p.full_name).collect();
-		sorted.sort();
+		let mut sorted: Vec<&crate::config::PinnedRepo> = config.pinned.iter().collect();
+		sorted.sort_by(|a, b| a.full_name.cmp(&b.full_name));
 		if !out.is_empty() {
 			out.push('\n');
 		}
 		let _ = writeln!(out, "Repos ({} total):", sorted.len());
 		for repo in sorted {
-			let _ = writeln!(out, "  {repo}");
+			let suffix = match repo.submodules {
+				Some(true) => " [submodules]",
+				Some(false) => " [no-submodules]",
+				None => "",
+			};
+			let _ = writeln!(out, "  {}{}", repo.full_name, suffix);
 		}
 	}
 	if !config.skipped.is_empty() {
@@ -203,7 +213,7 @@ mod tests {
 	#[test]
 	fn list_pinned_only_does_not_show_hint() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/repo", None);
+		config.pin_repo_with_options("alice/repo", None, None);
 		let out = format_list(&config, None);
 		assert!(!out.contains("gitkeep add"), "got: {out}");
 	}
@@ -211,7 +221,7 @@ mod tests {
 	#[test]
 	fn list_shows_tracked_users() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false);
+		config.add_user("alice", false, false, None);
 		let out = format_list(&config, None);
 		assert!(out.contains("alice"), "got: {out}");
 	}
@@ -219,7 +229,7 @@ mod tests {
 	#[test]
 	fn list_shows_forks_tag() {
 		let mut config = Config::default();
-		config.add_user("alice", true, false);
+		config.add_user("alice", true, false, None);
 		let out = format_list(&config, None);
 		assert!(out.contains("forks"), "got: {out}");
 	}
@@ -227,7 +237,7 @@ mod tests {
 	#[test]
 	fn list_shows_frozen_tag() {
 		let mut config = Config::default();
-		config.add_user("alice", false, true);
+		config.add_user("alice", false, true, None);
 		let out = format_list(&config, None);
 		assert!(out.contains("frozen"), "got: {out}");
 	}
@@ -235,7 +245,7 @@ mod tests {
 	#[test]
 	fn list_omits_skipped_section_when_none() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false);
+		config.add_user("alice", false, false, None);
 		let out = format_list(&config, None);
 		assert!(!out.to_lowercase().contains("skipped"), "got: {out}");
 	}
@@ -243,7 +253,7 @@ mod tests {
 	#[test]
 	fn list_shows_skipped_section_when_present() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false);
+		config.add_user("alice", false, false, None);
 		config.skip_repo("alice/noisy");
 		let out = format_list(&config, None);
 		assert!(out.contains("alice/noisy"), "got: {out}");
@@ -253,7 +263,7 @@ mod tests {
 	#[test]
 	fn list_skipped_repos_are_sorted() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false);
+		config.add_user("alice", false, false, None);
 		config.skip_repo("alice/zzz");
 		config.skip_repo("alice/aaa");
 		let out = format_list(&config, None);
@@ -265,17 +275,50 @@ mod tests {
 	#[test]
 	fn list_shows_pinned_section() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("rust-lang/mdBook", None);
+		config.pin_repo_with_options("rust-lang/mdBook", None, None);
 		let out = format_list(&config, None);
 		assert!(out.contains("rust-lang/mdBook"), "got: {out}");
 		assert!(out.contains("Repos ("), "got: {out}");
 	}
 
 	#[test]
+	fn list_shows_submodules_tag_when_enabled() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, Some(true));
+		let out = format_list(&config, None);
+		assert!(out.contains("submodules"), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_no_submodules_tag_when_explicitly_disabled() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, Some(false));
+		let out = format_list(&config, None);
+		assert!(out.contains("no-submodules"), "got: {out}");
+	}
+
+	#[test]
+	fn list_omits_submodules_tag_when_unset() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		let out = format_list(&config, None);
+		assert!(!out.contains("submodules"), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_submodules_tag_for_pinned_repo() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("alice/repo", None, Some(true));
+		let out = format_list(&config, None);
+		assert!(out.contains("alice/repo"), "got: {out}");
+		assert!(out.contains("submodules"), "got: {out}");
+	}
+
+	#[test]
 	fn list_pinned_repos_are_sorted() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("rust-lang/zzz", None);
-		config.pin_repo_with_id("rust-lang/aaa", None);
+		config.pin_repo_with_options("rust-lang/zzz", None, None);
+		config.pin_repo_with_options("rust-lang/aaa", None, None);
 		let out = format_list(&config, None);
 		let aaa_pos = out.find("rust-lang/aaa").unwrap();
 		let zzz_pos = out.find("rust-lang/zzz").unwrap();
@@ -285,7 +328,7 @@ mod tests {
 	#[test]
 	fn list_omits_pinned_section_when_none() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false);
+		config.add_user("alice", false, false, None);
 		let out = format_list(&config, None);
 		assert!(!out.contains("Repos ("), "got: {out}");
 	}
@@ -293,10 +336,10 @@ mod tests {
 	#[test]
 	fn add_user_removes_pins_for_that_user() {
 		let mut config = Config::default();
-		config.pin_repo_with_id("alice/foo", None);
-		config.pin_repo_with_id("alice/bar", None);
-		config.pin_repo_with_id("bob/baz", None);
-		config.add_user("alice", false, false);
+		config.pin_repo_with_options("alice/foo", None, None);
+		config.pin_repo_with_options("alice/bar", None, None);
+		config.pin_repo_with_options("bob/baz", None, None);
+		config.add_user("alice", false, false, None);
 		let pins_removed = config.remove_pins_for_user("alice");
 		assert_eq!(pins_removed.len(), 2);
 		assert!(config.is_pinned("bob/baz"));
