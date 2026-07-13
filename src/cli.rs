@@ -29,9 +29,12 @@ pub enum Commands {
 		/// Never clone submodules for these accounts/repos, overriding the global default
 		#[arg(long, conflicts_with = "submodules")]
 		no_submodules: bool,
-		/// Add to the tracked list without cloning right now
-		#[arg(long)]
+		/// Add to the tracked list without cloning right now, overriding the config default
+		#[arg(long, conflicts_with = "sync")]
 		no_sync: bool,
+		/// Clone immediately after adding, overriding a `no_sync = true` config default
+		#[arg(long, conflicts_with = "no_sync")]
+		sync: bool,
 	},
 	/// Skip a specific repo during sync (use user/repo format)
 	Skip {

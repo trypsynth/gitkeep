@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 	match cli.command {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
-		Commands::Add { users, forks, frozen, submodules, no_submodules, no_sync } => {
+		Commands::Add { users, forks, frozen, submodules, no_submodules, no_sync, sync } => {
 			let (repos, usernames): (Vec<String>, Vec<String>) = users.into_iter().partition(|s| s.contains('/'));
 			let submodules_override = if submodules {
 				Some(true)
@@ -31,12 +31,15 @@ async fn main() -> Result<()> {
 			} else {
 				None
 			};
+			let config = crate::config::Config::load()?;
+			// --sync / --no-sync override the configured default in either direction;
+			// with neither flag passed, fall back to the config's `no_sync` default.
+			let no_sync = if sync { false } else if no_sync { true } else { config.no_sync };
 
 			// Handle plain usernames first so that if someone mixes both formats
 			// (e.g. `gitkeep add rust-lang rust-lang/mdBook`), the full-user tracking
 			// wins and the individual pin is skipped cleanly.
 			if !usernames.is_empty() {
-				let config = crate::config::Config::load()?;
 				let client = config.build_client()?;
 				let mut resolved = Vec::with_capacity(usernames.len());
 				for name in &usernames {
@@ -59,7 +62,6 @@ async fn main() -> Result<()> {
 
 			// Handle individual repo pins.
 			if !repos.is_empty() {
-				let config = crate::config::Config::load()?;
 				let client = config.build_client()?;
 				let newly_pinned = track::add_pinned(&repos, &client, submodules_override).await?;
 				if !no_sync {

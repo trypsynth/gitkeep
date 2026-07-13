@@ -23,11 +23,13 @@ pub fn run() -> Result<()> {
 		.map(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })?;
 	let use_ssh = confirm("Use SSH clone URLs?", existing.use_ssh)?;
 	let submodules = confirm("Clone submodules by default?", existing.submodules)?;
+	let clone_on_add = confirm("Clone repos immediately after adding them?", !existing.no_sync)?;
 	let config = Config {
 		token: existing.token,
 		archive_dir,
 		use_ssh,
 		submodules,
+		no_sync: !clone_on_add,
 		track: existing.track,
 		skipped: existing.skipped,
 		pinned: existing.pinned,
