@@ -32,7 +32,6 @@ pub fn add(users: &[String], forks: bool, frozen: bool, submodules: Option<bool>
 pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<bool>) -> Result<Vec<String>> {
 	let mut config = Config::load()?;
 	let mut newly_pinned: Vec<String> = Vec::new();
-
 	for repo_str in repos {
 		let Some((user, name)) = repo_str.split_once('/') else {
 			bail!("'{repo_str}' is not in user/repo format");
@@ -40,30 +39,25 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 		if user.is_empty() || name.is_empty() || name.contains('/') {
 			bail!("'{repo_str}' is not in user/repo format");
 		}
-
 		// Already tracked in full? No need to pin.
 		if let Some(tracked) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)) {
 			println!("{} is already fully tracked; {name} will be synced automatically.", tracked.name);
 			continue;
 		}
-
 		// Case-insensitive duplicate-pin check (before hitting the API).
 		if let Some(existing) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
 			println!("Already tracking {}.", existing.full_name.clone());
 			continue;
 		}
-
 		// Conflict: repo is currently skipped.
 		if config.skipped.iter().any(|s| s.eq_ignore_ascii_case(repo_str)) {
 			bail!("'{repo_str}' is currently skipped. Run 'gitkeep unskip {repo_str}' first.");
 		}
-
 		// Verify the repo exists on GitHub and get canonical casing.
 		let (full_name, id) = match client.repos(user, name).get().await {
 			Ok(r) => (r.full_name.unwrap_or_else(|| repo_str.clone()), r.id.into_inner()),
 			Err(_) => bail!("'{repo_str}' does not exist on GitHub."),
 		};
-
 		// Re-check with canonical name in case casing differed.
 		if config.is_pinned(&full_name) {
 			println!("Already tracking {full_name}.");
@@ -72,12 +66,10 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 		if config.skipped.iter().any(|s| s.eq_ignore_ascii_case(&full_name)) {
 			bail!("'{full_name}' is currently skipped. Run 'gitkeep unskip {full_name}' first.");
 		}
-
 		config.pin_repo_with_options(&full_name, Some(id), submodules);
 		println!("Now tracking {full_name}.");
 		newly_pinned.push(full_name);
 	}
-
 	if !newly_pinned.is_empty() {
 		config.save()?;
 	}
@@ -88,14 +80,12 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let archive_root = config.archive_dir()?;
-
 	for target in users {
 		if target.contains('/') {
 			// Repo format: unpin
 			if config.unpin_repo(target) {
 				println!("No longer tracking {target}.");
 				changed = true;
-
 				if delete_dir {
 					let Some((user, name)) = target.split_once('/') else { continue };
 					let repo_dir = archive_root.join(user).join(name);
@@ -112,7 +102,6 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			let canonical = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone());
 			if config.remove_user(target) {
 				changed = true;
-
 				let dir_name = canonical.as_deref().unwrap_or(target);
 				let user_dir = archive_root.join(dir_name);
 				if user_dir.exists() {
@@ -121,7 +110,6 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 					} else {
 						confirm(&format!("Delete local archive for {target}?"), false)?
 					};
-
 					if should_delete {
 						println!("Deleting {}...", user_dir.display());
 						fs::remove_dir_all(&user_dir)?;
@@ -137,12 +125,10 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 				.map(|p| p.full_name.clone())
 				.collect();
 			matching.sort();
-
 			if matching.is_empty() {
 				println!("Not tracking '{target}'.");
 				continue;
 			}
-
 			println!(
 				"'{target}' is not tracked, but you have {} individually tracked under it:",
 				plural(matching.len(), "repo", "repos")
@@ -153,11 +139,9 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			if !yes && !confirm("Remove these repos too?", false)? {
 				continue;
 			}
-
 			for repo in config.remove_pins_for_user(target) {
 				println!("No longer tracking {repo}.");
 				changed = true;
-
 				let Some((user, name)) = repo.split_once('/') else { continue };
 				let repo_dir = archive_root.join(user).join(name);
 				if repo_dir.exists() {
@@ -166,7 +150,6 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 					} else {
 						confirm(&format!("Delete local archive for {repo}?"), false)?
 					};
-
 					if should_delete {
 						println!("Deleting {}...", repo_dir.display());
 						fs::remove_dir_all(&repo_dir)?;

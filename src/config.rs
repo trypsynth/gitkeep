@@ -151,7 +151,6 @@ impl Config {
 				entry.name = user.to_string();
 				true
 			};
-
 			let mut local_changed = if forks && !entry.forks {
 				entry.forks = true;
 				println!("Forks enabled for {user}.");
@@ -159,7 +158,6 @@ impl Config {
 			} else {
 				false
 			};
-
 			if frozen && !entry.frozen {
 				entry.frozen = true;
 				println!("Account frozen for {user}. Updates will be skipped.");
@@ -169,7 +167,6 @@ impl Config {
 				println!("Account unfrozen for {user}. Updates will be included.");
 				local_changed = true;
 			}
-
 			if let Some(submodules) = submodules
 				&& entry.submodules != Some(submodules)
 			{
@@ -177,7 +174,6 @@ impl Config {
 				println!("Submodules {} for {user}.", if submodules { "enabled" } else { "disabled" });
 				local_changed = true;
 			}
-
 			if !local_changed && !canonical_changed {
 				println!("Already tracking {user}.");
 			}
@@ -194,7 +190,6 @@ impl Config {
 			self.track.push(entry);
 			true
 		};
-
 		if changed {
 			self.sort_users();
 		}

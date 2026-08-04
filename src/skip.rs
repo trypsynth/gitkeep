@@ -21,10 +21,8 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
-
 	for repo_str in repos {
 		let (user, name) = parse_repo_arg(repo_str)?;
-
 		let local_path = archive_dir.join(user).join(name);
 		if local_path.exists() {
 			let canonical_user =
@@ -41,7 +39,6 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 			}
 			continue;
 		}
-
 		// Conflict: repo is individually pinned.
 		if config.pinned.iter().any(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
 			bail!(
@@ -49,7 +46,6 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 				 tracking it instead."
 			);
 		}
-
 		let user_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(user));
 		if !user_tracked {
 			bail!(
@@ -57,20 +53,17 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 				 Run 'gitkeep add {user}' first."
 			);
 		}
-
 		let github_repo = client.repos(user, name).get().await;
 		let full_name = match github_repo {
 			Ok(r) => r.full_name.unwrap_or_else(|| repo_str.clone()),
 			Err(_) => bail!("'{repo_str}' does not exist on GitHub."),
 		};
-
 		if config.skip_repo(&full_name) {
 			println!("Skipping {full_name}.");
 		} else {
 			println!("Already skipping {full_name}. Run 'gitkeep unskip {full_name}' to stop.");
 		}
 	}
-
 	config.save()
 }
 

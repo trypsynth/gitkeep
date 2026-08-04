@@ -41,7 +41,6 @@ async fn main() -> Result<()> {
 			} else {
 				config.no_sync
 			};
-
 			// Handle plain usernames first so that if someone mixes both formats
 			// (e.g. `gitkeep add rust-lang rust-lang/mdBook`), the full-user tracking
 			// wins and the individual pin is skipped cleanly.
@@ -65,7 +64,6 @@ async fn main() -> Result<()> {
 					sync::run_for(&resolved, opts).await?;
 				}
 			}
-
 			// Handle individual repo pins.
 			if !repos.is_empty() {
 				let client = config.build_client()?;
@@ -74,7 +72,6 @@ async fn main() -> Result<()> {
 					sync::run_pinned(&newly_pinned).await?;
 				}
 			}
-
 			Ok(())
 		}
 		Commands::Skip { repos, delete } => skip::add(&repos, delete).await,
