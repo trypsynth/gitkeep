@@ -114,13 +114,7 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			}
 		} else {
 			// Not a tracked user — but individually-pinned repos under this user may exist.
-			let mut matching: Vec<String> = config
-				.pinned
-				.iter()
-				.filter(|p| p.full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(target)))
-				.map(|p| p.full_name.clone())
-				.collect();
-			matching.sort();
+			let matching = config.pinned_repos_for_user(target);
 			if matching.is_empty() {
 				println!("Not tracking '{target}'.");
 				continue;

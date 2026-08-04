@@ -50,3 +50,23 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn plural_uses_singular_for_one() {
+		assert_eq!(plural(1, "repo", "repos"), "1 repo");
+	}
+
+	#[test]
+	fn plural_uses_plural_for_zero() {
+		assert_eq!(plural(0, "repo", "repos"), "0 repos");
+	}
+
+	#[test]
+	fn plural_uses_plural_for_many() {
+		assert_eq!(plural(5, "repo", "repos"), "5 repos");
+	}
+}

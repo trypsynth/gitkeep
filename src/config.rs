@@ -269,6 +269,18 @@ impl Config {
 		}
 	}
 
+	/// Returns the sorted full names of pinned repos owned by `user` (case-insensitive).
+	pub fn pinned_repos_for_user(&self, user: &str) -> Vec<String> {
+		let mut matching: Vec<String> = self
+			.pinned
+			.iter()
+			.filter(|p| p.full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)))
+			.map(|p| p.full_name.clone())
+			.collect();
+		matching.sort();
+		matching
+	}
+
 	/// Removes all pinned repos owned by `user` (case-insensitive) and returns their full names.
 	pub fn remove_pins_for_user(&mut self, user: &str) -> Vec<String> {
 		let to_remove: Vec<String> = self
@@ -571,6 +583,30 @@ mod tests {
 		let config: Config = toml::from_str(raw).expect("new pinned table array should deserialize");
 		assert!(config.is_pinned("alice/repo"));
 		assert_eq!(config.pinned_id("alice/repo"), Some(42));
+	}
+
+	#[test]
+	fn pinned_repos_for_user_returns_sorted_matches() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("alice/zzz", None, None);
+		config.pin_repo_with_options("alice/aaa", None, None);
+		config.pin_repo_with_options("bob/baz", None, None);
+		let matching = config.pinned_repos_for_user("alice");
+		assert_eq!(matching, vec!["alice/aaa".to_string(), "alice/zzz".to_string()]);
+	}
+
+	#[test]
+	fn pinned_repos_for_user_is_case_insensitive() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("Alice/foo", None, None);
+		assert_eq!(config.pinned_repos_for_user("alice"), vec!["Alice/foo".to_string()]);
+	}
+
+	#[test]
+	fn pinned_repos_for_user_returns_empty_when_none() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("bob/baz", None, None);
+		assert!(config.pinned_repos_for_user("alice").is_empty());
 	}
 
 	#[test]

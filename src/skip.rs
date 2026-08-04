@@ -17,6 +17,24 @@ fn parse_repo_arg(s: &str) -> Result<(&str, &str)> {
 	Ok((user, rest))
 }
 
+/// Checks whether `repo_str` can be skipped: it must not already be individually pinned,
+/// and its owner must be in the tracked list.
+fn check_skip_conflicts(config: &Config, repo_str: &str, user: &str) -> Result<()> {
+	if config.pinned.iter().any(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
+		bail!(
+			"'{repo_str}' is currently pinned. Run 'gitkeep remove {repo_str}' to stop \
+			 tracking it instead."
+		);
+	}
+	if !config.track.iter().any(|u| u.name.eq_ignore_ascii_case(user)) {
+		bail!(
+			"'{repo_str}' won't be synced: '{user}' is not in your tracked list. \
+			 Run 'gitkeep add {user}' first."
+		);
+	}
+	Ok(())
+}
+
 pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let client = config.build_client()?;
@@ -39,19 +57,7 @@ pub async fn add(repos: &[String], delete_dir: bool) -> Result<()> {
 			}
 			continue;
 		}
-		if config.pinned.iter().any(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
-			bail!(
-				"'{repo_str}' is currently pinned. Run 'gitkeep remove {repo_str}' to stop \
-				 tracking it instead."
-			);
-		}
-		let user_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(user));
-		if !user_tracked {
-			bail!(
-				"'{repo_str}' won't be synced: '{user}' is not in your tracked list. \
-				 Run 'gitkeep add {user}' first."
-			);
-		}
+		check_skip_conflicts(&config, repo_str, user)?;
 		let github_repo = client.repos(user, name).get().await;
 		let full_name = match github_repo {
 			Ok(r) => r.full_name.unwrap_or_else(|| repo_str.clone()),
@@ -171,5 +177,25 @@ mod tests {
 		config.skip_repo("user/repo");
 		unskip_one(&mut config, "user/repo").unwrap();
 		assert!(!config.is_skipped("user/repo"));
+	}
+
+	#[test]
+	fn check_skip_conflicts_rejects_pinned_repo() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("alice/repo", None, None);
+		assert!(check_skip_conflicts(&config, "alice/repo", "alice").is_err());
+	}
+
+	#[test]
+	fn check_skip_conflicts_rejects_untracked_user() {
+		let config = Config::default();
+		assert!(check_skip_conflicts(&config, "alice/repo", "alice").is_err());
+	}
+
+	#[test]
+	fn check_skip_conflicts_allows_tracked_user() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		assert!(check_skip_conflicts(&config, "alice/repo", "alice").is_ok());
 	}
 }
