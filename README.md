@@ -78,8 +78,13 @@ Re-enable a previously skipped repo.
 ### `list`  _(alias: `ls`)_
 Show all tracked users and orgs, including any per-account flags and the list of skipped repos.
 
-### `remove <USERNAME>...`  _(alias: `rm`)_
-Stop tracking one or more users or orgs. Prompts to delete the local archive directory; pass `--delete` to skip the prompt.
+### `remove <TARGET>...`  _(alias: `rm`)_
+Stop tracking one or more users, orgs, or individually pinned repos. Accepts either a plain username/org or `user/repo`. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
+
+| Flag | Description |
+|------|-------------|
+| `-d, --delete` | Also delete the local archive directory for these targets |
+| `-y, --yes` | Skip all confirmation prompts, assuming "yes" |
 
 ## License
 
