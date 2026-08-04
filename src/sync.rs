@@ -44,6 +44,29 @@ struct Totals {
 	new_repos: Vec<String>,
 }
 
+/// Read-only settings shared by every repo synced during a single run.
+#[derive(Clone, Copy)]
+struct SyncContext<'a> {
+	client: &'a Octocrab,
+	archive_dir: &'a Path,
+	opts: SyncOptions,
+	verbosity: Verbosity,
+}
+
+/// The mutable sync state and running totals threaded through a single run.
+struct SyncState<'a> {
+	state: &'a mut State,
+	totals: &'a mut Totals,
+}
+
+/// Identifying details for a single repo being cloned or pulled.
+struct RepoInfo<'a> {
+	username: &'a str,
+	name: &'a str,
+	full_name: &'a str,
+	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
@@ -115,19 +138,20 @@ async fn sync_all(
 		config.skipped.extend(legacy);
 	}
 	let mut totals = Totals::default();
+	let ctx = SyncContext { client: &client, archive_dir: &archive_dir, opts, verbosity };
+	let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
 	let mut seen = HashSet::new();
 	let mut config_changed = false;
 	for user in users {
 		if seen.insert(user.name.as_str()) {
-			let renamed = sync_one(user, opts, verbosity, &client, &archive_dir, config, &mut state, &mut totals).await;
+			let renamed = sync_one(user, ctx, config, &mut sync_state).await;
 			if renamed {
 				config_changed = true;
 			}
 		}
 	}
 	for full_name in pinned {
-		let renamed =
-			sync_one_pinned(full_name, opts, verbosity, &client, &archive_dir, config, &mut state, &mut totals).await;
+		let renamed = sync_one_pinned(full_name, ctx, config, &mut sync_state).await;
 		if renamed {
 			config_changed = true;
 		}
@@ -331,27 +355,22 @@ mod tests {
 	}
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn sync_one(
 	user: &TrackedUser,
-	opts: SyncOptions,
-	verbosity: Verbosity,
-	client: &Octocrab,
-	archive_dir: &Path,
+	ctx: SyncContext<'_>,
 	config: &mut Config,
-	state: &mut State,
-	totals: &mut Totals,
+	sync_state: &mut SyncState<'_>,
 ) -> bool {
-	if verbosity == Verbosity::Verbose {
+	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {}...", user.name);
 	}
-	let mut account = fetch_account(client, &user.name).await;
+	let mut account = fetch_account(ctx.client, &user.name).await;
 	if account.is_none()
 		&& let Some(id) = user.id
 	{
 		// The name-based lookup 404d; the account may have been renamed. Its stable id
 		// still resolves to the current login regardless of how many times it's changed.
-		account = fetch_account_by_id(client, id).await;
+		account = fetch_account_by_id(ctx.client, id).await;
 	}
 	let canonical = account.as_ref().map_or_else(|| user.name.clone(), |a| a.login.clone());
 	let is_org = account.as_ref().is_some_and(|a| a.account_type == "Organization");
@@ -365,15 +384,15 @@ async fn sync_one(
 			config_changed = true;
 		}
 		if canonical != entry.name {
-			let old_dir = archive_dir.join(&entry.name);
-			let new_dir = archive_dir.join(&canonical);
+			let old_dir = ctx.archive_dir.join(&entry.name);
+			let new_dir = ctx.archive_dir.join(&canonical);
 			if old_dir.exists()
 				&& !new_dir.exists()
 				&& let Err(e) = fs::rename(&old_dir, &new_dir)
 			{
 				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
 			}
-			if verbosity != Verbosity::Quiet {
+			if ctx.verbosity != Verbosity::Quiet {
 				println!("Username updated: {} → {}", entry.name, canonical);
 			}
 			entry.name.clone_from(&canonical);
@@ -383,22 +402,22 @@ async fn sync_one(
 
 	let repos_result = if is_org {
 		if config.token.is_some() {
-			fetch_org(client, &canonical).await
+			fetch_org(ctx.client, &canonical).await
 		} else {
-			fetch_public(client, &canonical).await
+			fetch_public(ctx.client, &canonical).await
 		}
 	} else if config.token.is_some() {
-		fetch_with_token(client, &canonical).await
+		fetch_with_token(ctx.client, &canonical).await
 	} else {
-		fetch_public(client, &canonical).await
+		fetch_public(ctx.client, &canonical).await
 	};
 	match repos_result {
 		Ok(repos) => {
-			let include_forks = opts.force_forks || user.forks;
-			let use_submodules = resolve_submodules(opts.force_submodules, user.submodules, config.submodules);
+			let include_forks = ctx.opts.force_forks || user.forks;
+			let use_submodules = resolve_submodules(ctx.opts.force_submodules, user.submodules, config.submodules);
 			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
 			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-			if verbosity == Verbosity::Verbose {
+			if ctx.verbosity == Verbosity::Verbose {
 				let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), canonical);
 				if !include_forks && fork_count > 0 {
 					let _ = write!(
@@ -410,56 +429,40 @@ async fn sync_one(
 				}
 				println!("{msg}");
 			}
-			sync_repo_list(
-				repos,
-				&canonical,
-				include_forks,
-				use_submodules,
-				opts,
-				verbosity,
-				archive_dir,
-				config,
-				state,
-				totals,
-			);
+			sync_repo_list(repos, &canonical, include_forks, use_submodules, ctx, config, sync_state);
 		}
 		Err(e) => {
 			eprintln!("  Could not fetch repositories for {canonical}: {e:#}.");
-			totals.failed += 1;
+			sync_state.totals.failed += 1;
 		}
 	}
 	config_changed
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn sync_one_pinned(
 	full_name: &str,
-	opts: SyncOptions,
-	verbosity: Verbosity,
-	client: &Octocrab,
-	archive_dir: &Path,
+	ctx: SyncContext<'_>,
 	config: &mut Config,
-	state: &mut State,
-	totals: &mut Totals,
+	sync_state: &mut SyncState<'_>,
 ) -> bool {
 	let Some((user, name)) = full_name.split_once('/') else { return false };
-	if verbosity == Verbosity::Verbose {
+	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {full_name}...");
 	}
 	let stored_id = config.pinned_id(full_name);
 	let use_submodules =
-		resolve_submodules(opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
-	let mut repo = client.repos(user, name).get().await.ok();
+		resolve_submodules(ctx.opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
+	let mut repo = ctx.client.repos(user, name).get().await.ok();
 	if repo.is_none()
 		&& let Some(id) = stored_id
 	{
 		// The owner/repo lookup 404d; the repo or its owner may have been renamed. Its
 		// stable id still resolves to the current owner/name regardless.
-		repo = fetch_repo_by_id(client, id).await;
+		repo = fetch_repo_by_id(ctx.client, id).await;
 	}
 	let Some(repo) = repo else {
 		eprintln!("  Could not fetch {full_name}.");
-		totals.failed += 1;
+		sync_state.totals.failed += 1;
 		return false;
 	};
 
@@ -468,8 +471,8 @@ async fn sync_one_pinned(
 	let repo_full_name = repo.full_name.clone().unwrap_or_else(|| full_name.to_string());
 	if repo_full_name != full_name {
 		if let Some((new_user, new_name)) = repo_full_name.split_once('/') {
-			let old_dir = archive_dir.join(user).join(name);
-			let new_dir = archive_dir.join(new_user).join(new_name);
+			let old_dir = ctx.archive_dir.join(user).join(name);
+			let new_dir = ctx.archive_dir.join(new_user).join(new_name);
 			if old_dir.exists()
 				&& !new_dir.exists()
 				&& let Err(e) = fs::rename(&old_dir, &new_dir)
@@ -477,7 +480,7 @@ async fn sync_one_pinned(
 				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
 			}
 		}
-		if verbosity != Verbosity::Quiet {
+		if ctx.verbosity != Verbosity::Quiet {
 			println!("Pinned repo updated: {full_name} → {repo_full_name}");
 		}
 		config.rename_pin(full_name, &repo_full_name);
@@ -491,183 +494,134 @@ async fn sync_one_pinned(
 	}
 
 	let owner = repo_full_name.split_once('/').map_or_else(|| user.to_string(), |(u, _)| u.to_string());
-	sync_repo_list(vec![repo], &owner, true, use_submodules, opts, verbosity, archive_dir, config, state, totals);
+	sync_repo_list(vec![repo], &owner, true, use_submodules, ctx, config, sync_state);
 	config_changed
 }
 
-#[allow(clippy::too_many_arguments)]
 fn sync_repo_list(
 	repos: Vec<Repository>,
 	username: &str,
 	include_forks: bool,
 	use_submodules: bool,
-	opts: SyncOptions,
-	verbosity: Verbosity,
-	archive_dir: &Path,
+	ctx: SyncContext<'_>,
 	config: &Config,
-	state: &mut State,
-	totals: &mut Totals,
+	sync_state: &mut SyncState<'_>,
 ) {
-	let user_dir = archive_dir.join(username);
+	let user_dir = ctx.archive_dir.join(username);
 	if let Err(e) = fs::create_dir_all(&user_dir) {
 		eprintln!("  Could not create directory for {username}: {e}.");
-		totals.failed += repos.len();
+		sync_state.totals.failed += repos.len();
 		return;
 	}
 	for repo in repos {
 		let name = &repo.name;
 		let full_name = repo.full_name.as_deref().unwrap_or(name.as_str());
 		if config.is_skipped(full_name) {
-			totals.skipped += 1;
+			sync_state.totals.skipped += 1;
 			continue;
 		}
 		if repo.fork.unwrap_or(false) && !include_forks {
-			totals.excluded += 1;
+			sync_state.totals.excluded += 1;
 			continue;
 		}
 		let Some(url) = clone_url(&repo, config.use_ssh) else {
-			totals.excluded += 1;
+			sync_state.totals.excluded += 1;
 			continue;
 		};
 		let repo_dir = user_dir.join(name.as_str());
 		let already_cloned = repo_dir.exists();
-		if already_cloned && opts.new_only {
-			totals.excluded += 1;
+		if already_cloned && ctx.opts.new_only {
+			sync_state.totals.excluded += 1;
 			continue;
 		}
-		if !already_cloned && opts.pull_only {
-			totals.excluded += 1;
+		if !already_cloned && ctx.opts.pull_only {
+			sync_state.totals.excluded += 1;
 			continue;
 		}
-		let repo_pushed_at = repo.pushed_at;
+		let info = RepoInfo { username, name, full_name, pushed_at: repo.pushed_at };
 		if already_cloned {
-			pull_and_record(
-				&repo_dir,
-				&url,
-				use_submodules,
-				verbosity,
-				username,
-				name,
-				full_name,
-				repo_pushed_at,
-				state,
-				totals,
-			);
+			pull_and_record(&repo_dir, &url, use_submodules, ctx.verbosity, &info, sync_state);
 		} else {
-			if verbosity == Verbosity::Verbose {
+			if ctx.verbosity == Verbosity::Verbose {
 				println!("Cloning {username}/{name}...");
 			}
-			clone_and_record(
-				&url,
-				&repo_dir,
-				use_submodules,
-				verbosity,
-				"clone",
-				username,
-				name,
-				full_name,
-				repo_pushed_at,
-				state,
-				totals,
-			);
+			clone_and_record(&url, &repo_dir, use_submodules, ctx.verbosity, "clone", &info, sync_state);
 		}
 	}
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pull_and_record(
 	repo_dir: &Path,
 	url: &str,
 	use_submodules: bool,
 	verbosity: Verbosity,
-	username: &str,
-	name: &str,
-	full_name: &str,
-	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
-	state: &mut State,
-	totals: &mut Totals,
+	info: &RepoInfo,
+	sync_state: &mut SyncState<'_>,
 ) {
-	let state_pushed_at = state.repos.get(full_name).and_then(|s| s.pushed_at);
-	if should_skip_pull(repo_pushed_at, state_pushed_at) {
-		totals.pulled_up_to_date += 1;
+	let state_pushed_at = sync_state.state.repos.get(info.full_name).and_then(|s| s.pushed_at);
+	if should_skip_pull(info.pushed_at, state_pushed_at) {
+		sync_state.totals.pulled_up_to_date += 1;
 		return;
 	}
 	if verbosity == Verbosity::Verbose {
-		println!("Pulling {username}/{name}...");
+		println!("Pulling {}/{}...", info.username, info.name);
 	}
 	match git_pull(repo_dir, verbosity) {
 		PullOutcome::Updated => {
-			state.mark_synced(full_name, repo_pushed_at);
+			sync_state.state.mark_synced(info.full_name, info.pushed_at);
 			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
-				eprintln!("  Could not update submodules for {username}/{name}: {e:#}.");
+				eprintln!("  Could not update submodules for {}/{}: {e:#}.", info.username, info.name);
 			}
 			if verbosity == Verbosity::Normal {
-				totals.updated_repos.push(format!("{username}/{name}"));
+				sync_state.totals.updated_repos.push(format!("{}/{}", info.username, info.name));
 			}
-			totals.pulled_updated += 1;
+			sync_state.totals.pulled_updated += 1;
 		}
 		PullOutcome::UpToDate => {
-			state.mark_synced(full_name, repo_pushed_at);
-			totals.pulled_up_to_date += 1;
+			sync_state.state.mark_synced(info.full_name, info.pushed_at);
+			sync_state.totals.pulled_up_to_date += 1;
 		}
 		PullOutcome::Fatal => {
 			if verbosity == Verbosity::Verbose {
-				println!("  Pull failed for {username}/{name} (exit 128), re-cloning...");
+				println!("  Pull failed for {}/{} (exit 128), re-cloning...", info.username, info.name);
 			}
 			if let Err(e) = fs::remove_dir_all(repo_dir) {
 				eprintln!("  Could not remove {}: {e}.", repo_dir.display());
-				totals.failed += 1;
+				sync_state.totals.failed += 1;
 				return;
 			}
-			clone_and_record(
-				url,
-				repo_dir,
-				use_submodules,
-				verbosity,
-				"re-clone",
-				username,
-				name,
-				full_name,
-				repo_pushed_at,
-				state,
-				totals,
-			);
+			clone_and_record(url, repo_dir, use_submodules, verbosity, "re-clone", info, sync_state);
 		}
 		PullOutcome::Failed(e) => {
-			eprintln!("  Failed to pull {username}/{name}: {e:#}.");
-			totals.failed += 1;
+			eprintln!("  Failed to pull {}/{}: {e:#}.", info.username, info.name);
+			sync_state.totals.failed += 1;
 		}
 	}
 }
 
-#[allow(clippy::too_many_arguments)]
 fn clone_and_record(
 	url: &str,
 	repo_dir: &Path,
 	use_submodules: bool,
 	verbosity: Verbosity,
 	action: &str,
-	username: &str,
-	name: &str,
-	full_name: &str,
-	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
-	state: &mut State,
-	totals: &mut Totals,
+	info: &RepoInfo,
+	sync_state: &mut SyncState<'_>,
 ) {
 	match git_clone(url, repo_dir, verbosity) {
 		Ok(()) => {
-			state.mark_synced(full_name, repo_pushed_at);
+			sync_state.state.mark_synced(info.full_name, info.pushed_at);
 			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
-				eprintln!("  Could not clone submodules for {username}/{name}: {e:#}.");
+				eprintln!("  Could not clone submodules for {}/{}: {e:#}.", info.username, info.name);
 			}
 			if verbosity == Verbosity::Normal {
-				totals.new_repos.push(format!("{username}/{name}"));
+				sync_state.totals.new_repos.push(format!("{}/{}", info.username, info.name));
 			}
-			totals.cloned += 1;
+			sync_state.totals.cloned += 1;
 		}
 		Err(e) => {
-			eprintln!("  Failed to {action} {username}/{name}: {e:#}.");
-			totals.failed += 1;
+			eprintln!("  Failed to {action} {}/{}: {e:#}.", info.username, info.name);
+			sync_state.totals.failed += 1;
 		}
 	}
 }
