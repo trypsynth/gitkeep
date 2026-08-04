@@ -34,7 +34,13 @@ async fn main() -> Result<()> {
 			let config = crate::config::Config::load()?;
 			// --sync / --no-sync override the configured default in either direction;
 			// with neither flag passed, fall back to the config's `no_sync` default.
-			let no_sync = if sync { false } else if no_sync { true } else { config.no_sync };
+			let no_sync = if sync {
+				false
+			} else if no_sync {
+				true
+			} else {
+				config.no_sync
+			};
 
 			// Handle plain usernames first so that if someone mixes both formats
 			// (e.g. `gitkeep add rust-lang rust-lang/mdBook`), the full-user tracking

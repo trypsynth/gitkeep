@@ -3,7 +3,10 @@ use std::{fmt::Write as _, fs, path::Path};
 use anyhow::{Result, bail};
 use octocrab::Octocrab;
 
-use crate::{config::Config, utils::confirm};
+use crate::{
+	config::Config,
+	utils::{confirm, plural},
+};
 
 pub fn add(users: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<()> {
 	let mut config = Config::load()?;
@@ -104,7 +107,7 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 			} else {
 				println!("Not tracking '{target}'.");
 			}
-		} else {
+		} else if config.track.iter().any(|u| u.name.eq_ignore_ascii_case(target)) {
 			// User format: existing behavior
 			let canonical = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone());
 			if config.remove_user(target) {
@@ -119,6 +122,48 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 					if should_delete {
 						println!("Deleting {}...", user_dir.display());
 						fs::remove_dir_all(&user_dir)?;
+					}
+				}
+			}
+		} else {
+			// Not a tracked user — but individually-pinned repos under this user may exist.
+			let mut matching: Vec<String> = config
+				.pinned
+				.iter()
+				.filter(|p| p.full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(target)))
+				.map(|p| p.full_name.clone())
+				.collect();
+			matching.sort();
+
+			if matching.is_empty() {
+				println!("Not tracking '{target}'.");
+				continue;
+			}
+
+			println!(
+				"'{target}' is not tracked, but you have {} individually tracked under it:",
+				plural(matching.len(), "repo", "repos")
+			);
+			for repo in &matching {
+				println!("  {repo}");
+			}
+			if !confirm("Remove these repos too?", false)? {
+				continue;
+			}
+
+			for repo in config.remove_pins_for_user(target) {
+				println!("No longer tracking {repo}.");
+				changed = true;
+
+				let Some((user, name)) = repo.split_once('/') else { continue };
+				let repo_dir = archive_root.join(user).join(name);
+				if repo_dir.exists() {
+					let should_delete =
+						if delete_dir { true } else { confirm(&format!("Delete local archive for {repo}?"), false)? };
+
+					if should_delete {
+						println!("Deleting {}...", repo_dir.display());
+						fs::remove_dir_all(&repo_dir)?;
 					}
 				}
 			}
