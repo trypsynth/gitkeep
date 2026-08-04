@@ -45,7 +45,7 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 		}
 		// Case-insensitive duplicate-pin check (before hitting the API).
 		if let Some(existing) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
-			println!("Already tracking {}.", existing.full_name.clone());
+			println!("Already tracking {}.", existing.full_name);
 			continue;
 		}
 		if config.skipped.iter().any(|s| s.eq_ignore_ascii_case(repo_str)) {
