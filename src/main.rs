@@ -64,7 +64,6 @@ async fn main() -> Result<()> {
 					sync::run_for(&resolved, opts).await?;
 				}
 			}
-			// Handle individual repo pins.
 			if !repos.is_empty() {
 				let client = config.build_client()?;
 				let newly_pinned = track::add_pinned(&repos, &client, submodules_override).await?;

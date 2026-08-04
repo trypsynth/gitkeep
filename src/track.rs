@@ -39,7 +39,6 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 		if user.is_empty() || name.is_empty() || name.contains('/') {
 			bail!("'{repo_str}' is not in user/repo format");
 		}
-		// Already tracked in full? No need to pin.
 		if let Some(tracked) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)) {
 			println!("{} is already fully tracked; {name} will be synced automatically.", tracked.name);
 			continue;
@@ -49,7 +48,6 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 			println!("Already tracking {}.", existing.full_name.clone());
 			continue;
 		}
-		// Conflict: repo is currently skipped.
 		if config.skipped.iter().any(|s| s.eq_ignore_ascii_case(repo_str)) {
 			bail!("'{repo_str}' is currently skipped. Run 'gitkeep unskip {repo_str}' first.");
 		}
@@ -82,7 +80,6 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	let archive_root = config.archive_dir()?;
 	for target in users {
 		if target.contains('/') {
-			// Repo format: unpin
 			if config.unpin_repo(target) {
 				println!("No longer tracking {target}.");
 				changed = true;
@@ -98,7 +95,6 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 				println!("Not tracking '{target}'.");
 			}
 		} else if config.track.iter().any(|u| u.name.eq_ignore_ascii_case(target)) {
-			// User format: existing behavior
 			let canonical = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone());
 			if config.remove_user(target) {
 				changed = true;
