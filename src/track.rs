@@ -240,7 +240,7 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 pub fn list() -> Result<()> {
 	let config = Config::load()?;
 	let archive_dir = config.archive_dir().ok();
-	print!("{}", format_list(&config, archive_dir.as_ref().map(|p| p.as_path())));
+	print!("{}", format_list(&config, archive_dir.as_deref()));
 	Ok(())
 }
 
