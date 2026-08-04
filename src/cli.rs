@@ -57,6 +57,9 @@ pub enum Commands {
 		/// Also delete the local archive directory for these users
 		#[arg(short, long)]
 		delete: bool,
+		/// Skip all confirmation prompts, assuming "yes"
+		#[arg(short, long)]
+		yes: bool,
 	},
 	/// Delete local copies of all skipped repos
 	Prune {

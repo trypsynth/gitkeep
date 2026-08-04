@@ -84,7 +84,7 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 	Ok(newly_pinned)
 }
 
-pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
+pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let archive_root = config.archive_dir()?;
@@ -116,8 +116,11 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 				let dir_name = canonical.as_deref().unwrap_or(target);
 				let user_dir = archive_root.join(dir_name);
 				if user_dir.exists() {
-					let should_delete =
-						if delete_dir { true } else { confirm(&format!("Delete local archive for {target}?"), false)? };
+					let should_delete = if delete_dir || yes {
+						true
+					} else {
+						confirm(&format!("Delete local archive for {target}?"), false)?
+					};
 
 					if should_delete {
 						println!("Deleting {}...", user_dir.display());
@@ -147,7 +150,7 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 			for repo in &matching {
 				println!("  {repo}");
 			}
-			if !confirm("Remove these repos too?", false)? {
+			if !yes && !confirm("Remove these repos too?", false)? {
 				continue;
 			}
 
@@ -158,8 +161,11 @@ pub fn remove(users: &[String], delete_dir: bool) -> Result<()> {
 				let Some((user, name)) = repo.split_once('/') else { continue };
 				let repo_dir = archive_root.join(user).join(name);
 				if repo_dir.exists() {
-					let should_delete =
-						if delete_dir { true } else { confirm(&format!("Delete local archive for {repo}?"), false)? };
+					let should_delete = if delete_dir || yes {
+						true
+					} else {
+						confirm(&format!("Delete local archive for {repo}?"), false)?
+					};
 
 					if should_delete {
 						println!("Deleting {}...", repo_dir.display());

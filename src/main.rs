@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
 		Commands::Skip { repos, delete } => skip::add(&repos, delete).await,
 		Commands::Prune { yes } => skip::prune(yes),
 		Commands::Unskip { repos } => skip::remove(&repos),
-		Commands::Remove { users, delete } => track::remove(&users, delete),
+		Commands::Remove { users, delete, yes } => track::remove(&users, delete, yes),
 		Commands::List => track::list(),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {
 			let verbosity = if quiet {
