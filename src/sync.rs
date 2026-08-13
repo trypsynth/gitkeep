@@ -2,6 +2,7 @@ use std::{
 	collections::HashSet,
 	fmt::Write as _,
 	fs,
+	io::{self, Write as _},
 	path::Path,
 	process::{Command, Stdio},
 	string::ToString,
@@ -275,6 +276,25 @@ mod tests {
 	#[test]
 	fn pull_when_neither_pushed_at() {
 		assert!(!should_skip_pull(None, None));
+	}
+
+	#[test]
+	fn identity_mismatch_detects_unrelated_histories() {
+		assert!(indicates_repo_identity_mismatch(b"fatal: refusing to merge unrelated histories"));
+	}
+
+	#[test]
+	fn identity_mismatch_detects_missing_tracked_ref() {
+		let stderr = b"Your configuration specifies to merge with the ref 'refs/heads/master'\n\
+			from the remote, but no such ref was fetched.";
+		assert!(indicates_repo_identity_mismatch(stderr));
+	}
+
+	#[test]
+	fn identity_mismatch_false_for_transient_failure() {
+		assert!(!indicates_repo_identity_mismatch(
+			b"fatal: unable to access 'https://github.com/x/y.git': Could not resolve host"
+		));
 	}
 
 	fn totals(skipped: usize) -> Totals {
@@ -594,7 +614,7 @@ fn pull_and_record(
 		}
 		PullOutcome::Fatal => {
 			if verbosity == Verbosity::Verbose {
-				println!("  Pull failed for {}/{} (exit 128), re-cloning...", info.username, info.name);
+				println!("  Pull failed for {}/{}, re-cloning...", info.username, info.name);
 			}
 			reclone(url, repo_dir, use_submodules, verbosity, info, sync_state);
 		}
@@ -762,34 +782,37 @@ enum PullOutcome {
 
 fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 	let head_before = git_head(repo_dir);
-	let exit_code = if verbosity == Verbosity::Verbose {
-		match Command::new("git").arg("pull").current_dir(repo_dir).status() {
-			Ok(s) => s.code().unwrap_or(-1),
-			Err(e) => {
-				return PullOutcome::Failed(
-					anyhow::Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
-				);
-			}
-		}
-	} else {
-		match Command::new("git").arg("pull").current_dir(repo_dir).stdout(Stdio::null()).stderr(Stdio::null()).output()
-		{
-			Ok(out) => out.status.code().unwrap_or(-1),
-			Err(e) => {
-				return PullOutcome::Failed(
-					anyhow::Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
-				);
-			}
+	let output = match Command::new("git").arg("pull").current_dir(repo_dir).output() {
+		Ok(out) => out,
+		Err(e) => {
+			return PullOutcome::Failed(
+				anyhow::Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
+			);
 		}
 	};
+	if verbosity == Verbosity::Verbose {
+		io::stdout().write_all(&output.stdout).ok();
+		io::stderr().write_all(&output.stderr).ok();
+	}
+	let exit_code = output.status.code().unwrap_or(-1);
 	if exit_code == 0 {
 		let head_after = git_head(repo_dir);
 		if head_before == head_after { PullOutcome::UpToDate } else { PullOutcome::Updated }
-	} else if exit_code == 128 {
+	} else if exit_code == 128 || indicates_repo_identity_mismatch(&output.stderr) {
 		PullOutcome::Fatal
 	} else {
 		PullOutcome::Failed(anyhow::anyhow!("git pull failed with code {exit_code}."))
 	}
+}
+
+/// True when a failed `git pull`'s stderr shows the local checkout no longer matches what's on
+/// the remote — e.g. `owner/name` was deleted and recreated as an unrelated repo, so the branch
+/// it used to track is gone or the histories share no common ancestor. Distinguishes that
+/// permanent case (which should trigger a re-clone) from transient failures like a network or
+/// auth error (which should just be reported).
+fn indicates_repo_identity_mismatch(stderr: &[u8]) -> bool {
+	let stderr = String::from_utf8_lossy(stderr);
+	stderr.contains("unrelated histories") || stderr.contains("but no such ref was fetched")
 }
 
 fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {
