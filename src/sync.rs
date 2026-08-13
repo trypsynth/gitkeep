@@ -64,6 +64,7 @@ struct RepoInfo<'a> {
 	username: &'a str,
 	name: &'a str,
 	full_name: &'a str,
+	id: u64,
 	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -538,7 +539,7 @@ fn sync_repo_list(
 			sync_state.totals.excluded += 1;
 			continue;
 		}
-		let info = RepoInfo { username, name, full_name, pushed_at: repo.pushed_at };
+		let info = RepoInfo { username, name, full_name, id: repo.id.into_inner(), pushed_at: repo.pushed_at };
 		if already_cloned {
 			pull_and_record(&repo_dir, &url, use_submodules, ctx.verbosity, &info, sync_state);
 		} else {
@@ -558,7 +559,17 @@ fn pull_and_record(
 	info: &RepoInfo,
 	sync_state: &mut SyncState<'_>,
 ) {
-	let state_pushed_at = sync_state.state.repos.get(info.full_name).and_then(|s| s.pushed_at);
+	let stored = sync_state.state.repos.get(info.full_name);
+	if let Some(stored_id) = stored.and_then(|s| s.id)
+		&& stored_id != info.id
+	{
+		if verbosity != Verbosity::Quiet {
+			println!("  {}/{} was recreated as a different repository, re-cloning...", info.username, info.name);
+		}
+		reclone(url, repo_dir, use_submodules, verbosity, info, sync_state);
+		return;
+	}
+	let state_pushed_at = stored.and_then(|s| s.pushed_at);
 	if should_skip_pull(info.pushed_at, state_pushed_at) {
 		sync_state.totals.pulled_up_to_date += 1;
 		return;
@@ -568,7 +579,7 @@ fn pull_and_record(
 	}
 	match git_pull(repo_dir, verbosity) {
 		PullOutcome::Updated => {
-			sync_state.state.mark_synced(info.full_name, info.pushed_at);
+			sync_state.state.mark_synced(info.full_name, info.pushed_at, info.id);
 			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
 				eprintln!("  Could not update submodules for {}/{}: {e:#}.", info.username, info.name);
 			}
@@ -578,25 +589,38 @@ fn pull_and_record(
 			sync_state.totals.pulled_updated += 1;
 		}
 		PullOutcome::UpToDate => {
-			sync_state.state.mark_synced(info.full_name, info.pushed_at);
+			sync_state.state.mark_synced(info.full_name, info.pushed_at, info.id);
 			sync_state.totals.pulled_up_to_date += 1;
 		}
 		PullOutcome::Fatal => {
 			if verbosity == Verbosity::Verbose {
 				println!("  Pull failed for {}/{} (exit 128), re-cloning...", info.username, info.name);
 			}
-			if let Err(e) = fs::remove_dir_all(repo_dir) {
-				eprintln!("  Could not remove {}: {e}.", repo_dir.display());
-				sync_state.totals.failed += 1;
-				return;
-			}
-			clone_and_record(url, repo_dir, use_submodules, verbosity, "re-clone", info, sync_state);
+			reclone(url, repo_dir, use_submodules, verbosity, info, sync_state);
 		}
 		PullOutcome::Failed(e) => {
 			eprintln!("  Failed to pull {}/{}: {e:#}.", info.username, info.name);
 			sync_state.totals.failed += 1;
 		}
 	}
+}
+
+/// Removes an existing local clone and clones it fresh, e.g. when the remote history is
+/// gone (exit 128) or `owner/name` now points at an unrelated repo (stored id changed).
+fn reclone(
+	url: &str,
+	repo_dir: &Path,
+	use_submodules: bool,
+	verbosity: Verbosity,
+	info: &RepoInfo,
+	sync_state: &mut SyncState<'_>,
+) {
+	if let Err(e) = fs::remove_dir_all(repo_dir) {
+		eprintln!("  Could not remove {}: {e}.", repo_dir.display());
+		sync_state.totals.failed += 1;
+		return;
+	}
+	clone_and_record(url, repo_dir, use_submodules, verbosity, "re-clone", info, sync_state);
 }
 
 fn clone_and_record(
@@ -610,7 +634,7 @@ fn clone_and_record(
 ) {
 	match git_clone(url, repo_dir, verbosity) {
 		Ok(()) => {
-			sync_state.state.mark_synced(info.full_name, info.pushed_at);
+			sync_state.state.mark_synced(info.full_name, info.pushed_at, info.id);
 			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
 				eprintln!("  Could not clone submodules for {}/{}: {e:#}.", info.username, info.name);
 			}

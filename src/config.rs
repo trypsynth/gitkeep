@@ -307,6 +307,10 @@ pub struct RepoState {
 	pub last_synced_at: DateTime<Utc>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub pushed_at: Option<DateTime<Utc>>,
+	/// Stable GitHub repo id, used to detect an `owner/name` being reused by a different
+	/// repo (e.g. deleted and recreated), which should force a re-clone rather than a pull.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub id: Option<u64>,
 }
 
 impl State {
@@ -330,8 +334,8 @@ impl State {
 		fs::write(&path, raw).with_context(|| format!("Could not write state to {}", path.display()))
 	}
 
-	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>) {
-		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now(), pushed_at });
+	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>, id: u64) {
+		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now(), pushed_at, id: Some(id) });
 	}
 
 	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
@@ -401,7 +405,7 @@ mod tests {
 	fn state_mark_synced_stores_pushed_at() {
 		let mut state = State::default();
 		let t = chrono::Utc::now();
-		state.mark_synced("user/repo", Some(t));
+		state.mark_synced("user/repo", Some(t), 1);
 		let stored = state.repos["user/repo"].pushed_at;
 		assert!(stored.is_some());
 	}
@@ -409,8 +413,15 @@ mod tests {
 	#[test]
 	fn state_mark_synced_stores_none_pushed_at() {
 		let mut state = State::default();
-		state.mark_synced("user/repo", None);
+		state.mark_synced("user/repo", None, 1);
 		assert!(state.repos["user/repo"].pushed_at.is_none());
+	}
+
+	#[test]
+	fn state_mark_synced_stores_id() {
+		let mut state = State::default();
+		state.mark_synced("user/repo", None, 42);
+		assert_eq!(state.repos["user/repo"].id, Some(42));
 	}
 
 	#[test]
