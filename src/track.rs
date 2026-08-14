@@ -94,12 +94,12 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			} else {
 				println!("Not tracking '{target}'.");
 			}
-		} else if config.track.iter().any(|u| u.name.eq_ignore_ascii_case(target)) {
-			let canonical = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone());
+		} else if let Some(canonical) =
+			config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone())
+		{
 			if config.remove_user(target) {
 				changed = true;
-				let dir_name = canonical.as_deref().unwrap_or(target);
-				let user_dir = archive_root.join(dir_name);
+				let user_dir = archive_root.join(&canonical);
 				if user_dir.exists() {
 					let should_delete = if delete_dir || yes {
 						true

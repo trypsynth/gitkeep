@@ -815,29 +815,25 @@ fn indicates_repo_identity_mismatch(stderr: &[u8]) -> bool {
 	stderr.contains("unrelated histories") || stderr.contains("but no such ref was fetched")
 }
 
-fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {
-	if verbosity == Verbosity::Verbose {
-		let status = Command::new("git")
-			.args(["clone", "--", url])
-			.arg(dest)
-			.status()
-			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
-		if !status.success() {
-			bail!("git clone failed with code {}. Check the URL and your credentials.", status.code().unwrap_or(-1));
-		}
+/// Runs a git subcommand, streaming its output to the terminal in verbose mode and suppressing
+/// it otherwise. `action` names the command in error messages (e.g. `"git clone"`).
+fn run_git(mut cmd: Command, verbosity: Verbosity, action: &str) -> Result<()> {
+	let status = if verbosity == Verbosity::Verbose {
+		cmd.status()
 	} else {
-		let out = Command::new("git")
-			.args(["clone", "--", url])
-			.arg(dest)
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.output()
-			.context("Could not run 'git clone'. Is git installed and on your PATH?")?;
-		if !out.status.success() {
-			bail!("git clone failed with code {}.", out.status.code().unwrap_or(-1));
-		}
+		cmd.stdout(Stdio::null()).stderr(Stdio::null()).status()
+	}
+	.with_context(|| format!("Could not run '{action}'. Is git installed and on your PATH?"))?;
+	if !status.success() {
+		bail!("{action} failed with code {}.", status.code().unwrap_or(-1));
 	}
 	Ok(())
+}
+
+fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {
+	let mut cmd = Command::new("git");
+	cmd.args(["clone", "--", url]).arg(dest);
+	run_git(cmd, verbosity, "git clone")
 }
 
 /// Initializes and updates submodules to the commit recorded by the superproject. Idempotent,
@@ -846,26 +842,7 @@ fn update_submodules(repo_dir: &Path, verbosity: Verbosity) -> Result<()> {
 	if !repo_dir.join(".gitmodules").exists() {
 		return Ok(());
 	}
-	if verbosity == Verbosity::Verbose {
-		let status = Command::new("git")
-			.args(["submodule", "update", "--init", "--recursive"])
-			.current_dir(repo_dir)
-			.status()
-			.context("Could not run 'git submodule update'. Is git installed and on your PATH?")?;
-		if !status.success() {
-			bail!("git submodule update failed with code {}.", status.code().unwrap_or(-1));
-		}
-	} else {
-		let out = Command::new("git")
-			.args(["submodule", "update", "--init", "--recursive"])
-			.current_dir(repo_dir)
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.output()
-			.context("Could not run 'git submodule update'. Is git installed and on your PATH?")?;
-		if !out.status.success() {
-			bail!("git submodule update failed with code {}.", out.status.code().unwrap_or(-1));
-		}
-	}
-	Ok(())
+	let mut cmd = Command::new("git");
+	cmd.args(["submodule", "update", "--init", "--recursive"]).current_dir(repo_dir);
+	run_git(cmd, verbosity, "git submodule update")
 }
