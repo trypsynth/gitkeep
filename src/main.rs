@@ -16,7 +16,7 @@ mod utils;
 
 use crate::cli::{Cli, Commands};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
 	let cli = Cli::parse();
 	match cli.command {
