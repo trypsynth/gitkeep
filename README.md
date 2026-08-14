@@ -44,19 +44,22 @@ gitkeep list          # show what's tracked
 ## Commands
 
 ### `init`
-Configure the archive directory and whether to use SSH or HTTPS clone URLs. Re-run at any time to update settings; your token and tracked users are preserved.
+Configure the archive directory, whether to use SSH or HTTPS clone URLs, whether to clone submodules by default, and whether repos are cloned immediately when added. Re-run at any time to update settings; your token and tracked users are preserved.
 
 ### `login`
 Authenticate with a GitHub personal access token. Opens the token creation page in your browser, validates the token, and saves it to config. Also adds your own account to the tracked list automatically.
 
-### `add <USERNAME>...`
-Add one or more GitHub users or orgs to the archive list and clone their repos immediately.
+### `add <TARGET>...`
+Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo).
 
 | Flag | Description |
 |------|-------------|
 | `--forks` | Include forked repositories for these accounts |
 | `--frozen` | Track the account but never update it during bulk syncs |
-| `--no-sync` | Add to the tracked list without cloning right now |
+| `--submodules` | Clone submodules for these accounts/repos, overriding the global default |
+| `--no-submodules` | Never clone submodules for these accounts/repos, overriding the global default |
+| `--no-sync` | Add to the tracked list without cloning right now, overriding the config default |
+| `--sync` | Clone immediately after adding, overriding a `no_sync = true` config default |
 
 ### `sync [USERNAME]...`  _(alias: `run`)_
 Sync all tracked accounts. Passing usernames adds them to the tracked list and syncs them immediately (same as `add` + `sync`).
@@ -64,16 +67,30 @@ Sync all tracked accounts. Passing usernames adds them to the tracked list and s
 | Flag | Description |
 |------|-------------|
 | `--forks` | Include forks for this run only (does not save to config) |
+| `--submodules` | Clone submodules for this run only (does not save to config) |
 | `-p, --pull-only` | Only pull existing repos; skip checking for new ones |
 | `-n, --new-only` | Only clone new repos; skip pulling existing ones |
 | `-q, --quiet` | Suppress all output except errors and the final summary |
 | `-v, --verbose` | Show raw git output and per-repo detail |
 
+A sync that fails to pull an existing repo because it no longer matches what's on GitHub (e.g. the `owner/name` was deleted and recreated as a different repo) automatically deletes the stale local clone and re-clones it.
+
 ### `skip <user/repo>...`
 Exclude a specific repo from future syncs. Accepts `user/repo` format.
 
+| Flag | Description |
+|------|-------------|
+| `-d, --delete` | Also delete the local archive directory for these repos |
+
 ### `unskip <user/repo>...`
 Re-enable a previously skipped repo.
+
+### `prune`
+Delete the local archive directories for all currently skipped repos, after confirmation.
+
+| Flag | Description |
+|------|-------------|
+| `-y, --yes` | Skip the confirmation prompt |
 
 ### `list`  _(alias: `ls`)_
 Show all tracked users and orgs, including any per-account flags and the list of skipped repos.
