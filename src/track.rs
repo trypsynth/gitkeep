@@ -129,10 +129,12 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			if !yes && !confirm("Remove these repos too?", false)? {
 				continue;
 			}
+			let mut canonical_user = None;
 			for repo in config.remove_pins_for_user(target) {
 				println!("No longer tracking {repo}.");
 				changed = true;
 				let Some((user, name)) = repo.split_once('/') else { continue };
+				canonical_user.get_or_insert_with(|| user.to_string());
 				let repo_dir = archive_root.join(user).join(name);
 				if repo_dir.exists() {
 					let should_delete = if delete_dir || yes {
@@ -144,6 +146,13 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 						println!("Deleting {}...", repo_dir.display());
 						fs::remove_dir_all(&repo_dir)?;
 					}
+				}
+			}
+			// Clean up the now-possibly-empty top-level user directory.
+			if let Some(user) = canonical_user {
+				let user_dir = archive_root.join(user);
+				if user_dir.is_dir() {
+					let _ = fs::remove_dir(&user_dir);
 				}
 			}
 		}
