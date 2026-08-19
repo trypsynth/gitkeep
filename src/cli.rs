@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+use crate::size::SizeFormat;
+
 #[derive(Parser)]
 #[command(name = "gitkeep", about = "High-performance GitHub archival tool")]
 pub struct Cli {
@@ -70,6 +72,13 @@ pub enum Commands {
 	/// Show all tracked users and orgs
 	#[command(alias = "ls")]
 	List,
+	/// Show the on-disk size of the archive, broken down per account
+	#[command(alias = "du")]
+	Size {
+		/// Size unit format to display
+		#[arg(short = 's', long, value_enum, default_value = "binary")]
+		format: SizeFormat,
+	},
 	/// Sync all tracked users. Optionally pass usernames to add and sync immediately.
 	#[command(alias = "run")]
 	Sync {

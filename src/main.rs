@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod init;
 mod login;
+mod size;
 mod skip;
 mod sync;
 mod track;
@@ -78,6 +79,7 @@ async fn main() -> Result<()> {
 		Commands::Unskip { repos } => skip::remove(&repos),
 		Commands::Remove { users, delete, yes } => track::remove(&users, delete, yes),
 		Commands::List => track::list(),
+		Commands::Size { format } => size::run(format),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {
 			let verbosity = if quiet {
 				sync::Verbosity::Quiet

@@ -95,6 +95,13 @@ Delete the local archive directories for all currently skipped repos, after conf
 ### `list`  _(alias: `ls`)_
 Show all tracked users and orgs, including any per-account flags and the list of skipped repos.
 
+### `size`  _(alias: `du`)_
+Show the on-disk size of the archive, broken down per account.
+
+| Flag | Description |
+|------|-------------|
+| `-s, --format <FORMAT>` | Unit format: `decimal` (kB/MB/GB, base 1000), `binary` (KiB/MiB/GiB, base 1024, default), or `raw` (exact byte count) |
+
 ### `remove <TARGET>...`  _(alias: `rm`)_
 Stop tracking one or more users, orgs, or individually pinned repos. Accepts either a plain username/org or `user/repo`. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
 
