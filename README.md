@@ -103,6 +103,17 @@ Stop tracking one or more users, orgs, or individually pinned repos. Accepts eit
 | `-d, --delete` | Also delete the local archive directory for these targets |
 | `-y, --yes` | Skip all confirmation prompts, assuming "yes" |
 
+## Development
+
+Formatting relies on unstable rustfmt options (see `rustfmt.toml`), which stable rustfmt silently ignores. Format with the nightly toolchain:
+
+```bash
+rustup toolchain install nightly --component rustfmt
+cargo +nightly fmt
+```
+
+CI enforces this the same way, via `cargo fmt -- --check` on the nightly toolchain.
+
 ## License
 
 `gitkeep` is licensed under the [MIT License](LICENSE).
