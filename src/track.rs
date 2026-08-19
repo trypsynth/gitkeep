@@ -116,7 +116,16 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			// Not a tracked user — but individually-pinned repos under this user may exist.
 			let matching = config.pinned_repos_for_user(target);
 			if matching.is_empty() {
-				println!("Not tracking '{target}'.");
+				if let Some(dir) = find_orphaned_dir(&archive_root, target)? {
+					println!("'{target}' is not tracked, but a local archive exists at {}.", dir.display());
+					let should_delete = if delete_dir || yes { true } else { confirm("Delete it?", false)? };
+					if should_delete {
+						println!("Deleting {}...", dir.display());
+						fs::remove_dir_all(&dir)?;
+					}
+				} else {
+					println!("Not tracking '{target}'.");
+				}
 				continue;
 			}
 			println!(
@@ -161,6 +170,26 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 		config.save()?;
 	}
 	Ok(())
+}
+
+/// Looks for a top-level directory under the archive root matching `name` (case-insensitively,
+/// since GitHub usernames aren't case-sensitive but directory lookups on most filesystems are).
+/// Used to spot a leftover archive for a user that was removed without `--delete`.
+fn find_orphaned_dir(archive_root: &Path, name: &str) -> Result<Option<std::path::PathBuf>> {
+	let direct = archive_root.join(name);
+	if direct.is_dir() {
+		return Ok(Some(direct));
+	}
+	if !archive_root.is_dir() {
+		return Ok(None);
+	}
+	for entry in fs::read_dir(archive_root)? {
+		let entry = entry?;
+		if entry.file_type()?.is_dir() && entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+			return Ok(Some(entry.path()));
+		}
+	}
+	Ok(None)
 }
 
 fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
@@ -234,7 +263,51 @@ pub fn list() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::atomic::{AtomicU32, Ordering};
+
 	use super::*;
+
+	/// Creates a fresh, empty scratch directory under the system temp dir for a single test.
+	fn temp_dir() -> std::path::PathBuf {
+		static COUNTER: AtomicU32 = AtomicU32::new(0);
+		let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+		let dir = std::env::temp_dir().join(format!("gitkeep-track-test-{}-{n}", std::process::id()));
+		fs::create_dir_all(&dir).unwrap();
+		dir
+	}
+
+	#[test]
+	fn find_orphaned_dir_matches_exact_case() {
+		let root = temp_dir();
+		fs::create_dir(root.join("alice")).unwrap();
+		let found = find_orphaned_dir(&root, "alice").unwrap();
+		assert_eq!(found, Some(root.join("alice")));
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[test]
+	fn find_orphaned_dir_matches_case_insensitively() {
+		let root = temp_dir();
+		fs::create_dir(root.join("Alice")).unwrap();
+		let found = find_orphaned_dir(&root, "alice").unwrap();
+		assert_eq!(found, Some(root.join("Alice")));
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[test]
+	fn find_orphaned_dir_none_when_missing() {
+		let root = temp_dir();
+		let found = find_orphaned_dir(&root, "alice").unwrap();
+		assert_eq!(found, None);
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[test]
+	fn find_orphaned_dir_none_when_archive_root_missing() {
+		let root = temp_dir().join("does-not-exist");
+		let found = find_orphaned_dir(&root, "alice").unwrap();
+		assert_eq!(found, None);
+	}
 
 	#[test]
 	fn list_empty_state_shows_hint() {
