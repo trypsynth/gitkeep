@@ -5,18 +5,19 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
 use dirs::home_dir;
 use octocrab::{Octocrab, OctocrabBuilder};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use toml::{from_str, to_string_pretty};
 
-use crate::forge::{Forge, ForgeKind, GitHub, GitLab, split_host};
+mod account;
+mod state;
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
-const fn is_false(v: &bool) -> bool {
-	!*v
-}
+pub use self::{
+	account::{HostConfig, PinnedRepo, TrackedAccount},
+	state::State,
+};
+use crate::forge::{Forge, ForgeKind, GitHub, GitLab, split_host};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -47,98 +48,6 @@ pub struct Config {
 	pub excluded: HashSet<String>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub pinned: Vec<PinnedRepo>,
-}
-
-/// A self-hosted forge: which software it runs and, optionally, a token for private repos.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostConfig {
-	pub kind: ForgeKind,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub token: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackedAccount {
-	pub name: String,
-	#[serde(default, skip_serializing_if = "is_false")]
-	pub forks: bool,
-	#[serde(default, skip_serializing_if = "is_false")]
-	pub frozen: bool,
-	/// Stable GitHub account id, used to re-resolve the account if it gets renamed.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub id: Option<u64>,
-	/// Overrides the global `submodules` default for this account. `None` inherits it.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub submodules: Option<bool>,
-	/// Forge host this account lives on (e.g. "gitlab.example.com"), described in `Config::hosts`.
-	/// `None` means GitHub.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub host: Option<String>,
-}
-
-impl TrackedAccount {
-	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
-		Self { name: name.into(), forks, frozen, id: None, submodules: None, host: None }
-	}
-
-	pub fn display_name(&self) -> String {
-		self.host.as_ref().map_or_else(|| self.name.clone(), |h| format!("{h}/{}", self.name))
-	}
-
-	/// True when this tracked account's sync already includes `full_name` (a pin key),
-	/// so an individual pin would be redundant. For GitLab entries a subgroup project is
-	/// covered too, since group syncs include subgroups.
-	pub fn covers(&self, full_name: &str) -> bool {
-		match (&self.host, split_host(full_name)) {
-			(Some(h), Some((host, path))) => {
-				h == host
-					&& path.rsplit_once('/').is_some_and(|(owner, _)| {
-						owner.eq_ignore_ascii_case(&self.name)
-							|| owner.to_lowercase().starts_with(&format!("{}/", self.name.to_lowercase()))
-					})
-			}
-			(None, None) => full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(&self.name)),
-			_ => false,
-		}
-	}
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PinnedRepo {
-	pub full_name: String,
-	/// Stable GitHub repository id, used to re-resolve the repo if it or its owner gets renamed.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub id: Option<u64>,
-	/// Overrides the global `submodules` default for this pin. `None` inherits it.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub submodules: Option<bool>,
-}
-
-// Accepts both the legacy bare-string form (`pinned = ["user/repo"]`) and the current
-// table form (`[[pinned]] full_name = "user/repo" id = 42`), so existing configs keep
-// loading after this field's on-disk shape changed.
-impl<'de> Deserialize<'de> for PinnedRepo {
-	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-	where
-		D: Deserializer<'de>,
-	{
-		#[derive(Deserialize)]
-		#[serde(untagged)]
-		enum Repr {
-			Legacy(String),
-			Full {
-				full_name: String,
-				#[serde(default)]
-				id: Option<u64>,
-				#[serde(default)]
-				submodules: Option<bool>,
-			},
-		}
-		Ok(match Repr::deserialize(deserializer)? {
-			Repr::Legacy(full_name) => Self { full_name, id: None, submodules: None },
-			Repr::Full { full_name, id, submodules } => Self { full_name, id, submodules },
-		})
-	}
 }
 
 impl Config {
@@ -379,58 +288,9 @@ impl Config {
 	}
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct State {
-	#[serde(default)]
-	pub repos: HashMap<String, RepoState>,
-	#[serde(default, skip_serializing)]
-	pub skipped: HashSet<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RepoState {
-	pub last_synced_at: DateTime<Utc>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub pushed_at: Option<DateTime<Utc>>,
-	/// Stable GitHub repo id, used to detect an `owner/name` being reused by a different
-	/// repo (e.g. deleted and recreated), which should force a re-clone rather than a pull.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub id: Option<u64>,
-}
-
-impl State {
-	pub fn path() -> Result<PathBuf> {
-		let home = home_dir().context("Could not find your home directory")?;
-		Ok(home.join(".gitkeep_state.toml"))
-	}
-
-	pub fn load() -> Result<Self> {
-		let path = Self::path()?;
-		if !path.exists() {
-			return Ok(Self::default());
-		}
-		let raw = fs::read_to_string(&path).with_context(|| format!("Could not read state from {}", path.display()))?;
-		Ok(from_str(&raw).unwrap_or_default())
-	}
-
-	pub fn save(&self) -> Result<()> {
-		let path = Self::path()?;
-		let raw = to_string_pretty(self).context("Could not serialize state")?;
-		fs::write(&path, raw).with_context(|| format!("Could not write state to {}", path.display()))
-	}
-
-	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>, id: u64) {
-		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now(), pushed_at, id: Some(id) });
-	}
-
-	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
-		mem::take(&mut self.skipped)
-	}
-}
-
 #[cfg(test)]
 mod tests {
-	use toml::{Value, to_string};
+	use toml::to_string;
 
 	use super::*;
 
@@ -503,45 +363,6 @@ mod tests {
 	}
 
 	#[test]
-	fn state_mark_synced_stores_pushed_at() {
-		let mut state = State::default();
-		let t = Utc::now();
-		state.mark_synced("user/repo", Some(t), 1);
-		let stored = state.repos["user/repo"].pushed_at;
-		assert!(stored.is_some());
-	}
-
-	#[test]
-	fn state_mark_synced_stores_none_pushed_at() {
-		let mut state = State::default();
-		state.mark_synced("user/repo", None, 1);
-		assert!(state.repos["user/repo"].pushed_at.is_none());
-	}
-
-	#[test]
-	fn state_mark_synced_stores_id() {
-		let mut state = State::default();
-		state.mark_synced("user/repo", None, 42);
-		assert_eq!(state.repos["user/repo"].id, Some(42));
-	}
-
-	#[test]
-	fn state_drain_legacy_skipped_moves_entries() {
-		let mut state = State::default();
-		state.skipped.insert("user/repo".to_string());
-		let drained = state.drain_legacy_skipped();
-		assert!(drained.contains("user/repo"));
-	}
-
-	#[test]
-	fn state_drain_legacy_skipped_empties_state() {
-		let mut state = State::default();
-		state.skipped.insert("user/repo".to_string());
-		state.drain_legacy_skipped();
-		assert!(state.skipped.is_empty());
-	}
-
-	#[test]
 	fn config_pin_repo_marks_as_pinned() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("user/repo", None, None);
@@ -578,27 +399,6 @@ mod tests {
 	fn config_is_pinned_false_for_unknown() {
 		let config = Config::default();
 		assert!(!config.is_pinned("user/repo"));
-	}
-
-	#[test]
-	fn pinned_repo_deserializes_legacy_bare_string() {
-		let repo: PinnedRepo = Value::String("alice/repo".to_string()).try_into().unwrap();
-		assert_eq!(repo.full_name, "alice/repo");
-		assert_eq!(repo.id, None);
-	}
-
-	#[test]
-	fn tracked_user_submodules_defaults_to_none_for_legacy_toml() {
-		let user: TrackedAccount = from_str(r#"name = "alice""#).unwrap();
-		assert_eq!(user.submodules, None);
-	}
-
-	#[test]
-	fn tracked_user_submodules_round_trips() {
-		let user = TrackedAccount { submodules: Some(true), ..TrackedAccount::with_options("alice", false, false) };
-		let raw = to_string(&user).unwrap();
-		let back: TrackedAccount = from_str(&raw).unwrap();
-		assert_eq!(back.submodules, Some(true));
 	}
 
 	#[test]
@@ -728,27 +528,6 @@ mod tests {
 	}
 
 	#[test]
-	fn tracked_user_id_defaults_to_none_when_deserializing_legacy_toml() {
-		let user: TrackedAccount = from_str(r#"name = "alice""#).unwrap();
-		assert_eq!(user.id, None);
-	}
-
-	#[test]
-	fn tracked_user_id_round_trips() {
-		let user = TrackedAccount { id: Some(42), ..TrackedAccount::with_options("alice", false, false) };
-		let raw = to_string(&user).unwrap();
-		let back: TrackedAccount = from_str(&raw).unwrap();
-		assert_eq!(back.id, Some(42));
-	}
-
-	#[test]
-	fn tracked_user_id_omitted_from_toml_when_none() {
-		let user = TrackedAccount::with_options("alice", false, false);
-		let raw = to_string(&user).unwrap();
-		assert!(!raw.contains("id"), "got: {raw}");
-	}
-
-	#[test]
 	fn pin_repo_stores_id() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("alice/repo", Some(7), None);
@@ -777,23 +556,6 @@ mod tests {
 		assert!(config.is_pinned("bob/repo"));
 		assert!(!config.is_pinned("alice/repo"));
 		assert_eq!(config.pinned_id("bob/repo"), Some(7));
-	}
-
-	#[test]
-	fn tracked_user_host_defaults_to_none_for_legacy_toml() {
-		let user: TrackedAccount = from_str(r#"name = "alice""#).unwrap();
-		assert_eq!(user.host, None);
-	}
-
-	#[test]
-	fn tracked_user_host_round_trips() {
-		let user = TrackedAccount {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedAccount::with_options("grp", false, false)
-		};
-		let raw = to_string(&user).unwrap();
-		let back: TrackedAccount = from_str(&raw).unwrap();
-		assert_eq!(back.host.as_deref(), Some("gitlab.example.com"));
 	}
 
 	#[test]
@@ -868,54 +630,6 @@ mod tests {
 	}
 
 	#[test]
-	fn display_name_includes_host_for_gitlab() {
-		let user = TrackedAccount {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedAccount::with_options("grp", false, false)
-		};
-		assert_eq!(user.display_name(), "gitlab.example.com/grp");
-	}
-
-	#[test]
-	fn covers_github_pin_by_owner() {
-		let user = TrackedAccount::with_options("Alice", false, false);
-		assert!(user.covers("alice/repo"));
-		assert!(!user.covers("bob/repo"));
-	}
-
-	#[test]
-	fn covers_rejects_cross_provider() {
-		let github = TrackedAccount::with_options("alice", false, false);
-		assert!(!github.covers("gitlab.example.com/alice/repo"));
-		let gitlab = TrackedAccount {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedAccount::with_options("alice", false, false)
-		};
-		assert!(!gitlab.covers("alice/repo"));
-	}
-
-	#[test]
-	fn covers_gitlab_pin_including_subgroups() {
-		let user = TrackedAccount {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedAccount::with_options("grp", false, false)
-		};
-		assert!(user.covers("gitlab.example.com/grp/proj"));
-		assert!(user.covers("gitlab.example.com/grp/sub/proj"));
-		assert!(!user.covers("gitlab.example.com/other/proj"));
-		assert!(!user.covers("gitlab.other.com/grp/proj"));
-	}
-
-	#[test]
-	fn covers_gitlab_does_not_match_sibling_prefix() {
-		let user = TrackedAccount {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedAccount::with_options("grp", false, false)
-		};
-		assert!(!user.covers("gitlab.example.com/grpx/proj"));
-	}
-
-	#[test]
 	fn remove_pins_covered_removes_gitlab_pins() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("gitlab.example.com/grp/proj", None, None);
@@ -933,5 +647,17 @@ mod tests {
 	fn rename_pin_returns_false_when_source_missing() {
 		let mut config = Config::default();
 		assert!(!config.rename_pin("alice/repo", "bob/repo"));
+	}
+
+	#[test]
+	fn add_account_removes_pins_for_that_user() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("alice/foo", None, None);
+		config.pin_repo_with_options("alice/bar", None, None);
+		config.pin_repo_with_options("bob/baz", None, None);
+		config.add_account(None, "alice", false, false, None);
+		let pins_removed = config.remove_pins_covered(&TrackedAccount::with_options("alice", false, false));
+		assert_eq!(pins_removed.len(), 2);
+		assert!(config.is_pinned("bob/baz"));
 	}
 }
