@@ -18,7 +18,6 @@ mod utils;
 use crate::{
 	cli::{Cli, Commands},
 	config::Config,
-	forge::Target,
 };
 
 #[allow(clippy::fn_params_excessive_bools)]
@@ -77,7 +76,6 @@ async fn main() -> Result<()> {
 		Commands::List => track::list(),
 		Commands::Size { format } => size::run(format),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {
-			let users: Vec<String> = users.iter().map(|u| Target::parse(u).key()).collect();
 			let verbosity = if quiet {
 				sync::Verbosity::Quiet
 			} else if verbose {
@@ -86,7 +84,7 @@ async fn main() -> Result<()> {
 				sync::Verbosity::Normal
 			};
 			let opts = sync::SyncOptions { force_forks: forks, force_submodules: submodules, pull_only, new_only };
-			sync::run(&users, opts, verbosity).await
+			sync::run(&utils::expand_targets(users)?, opts, verbosity).await
 		}
 	}
 }

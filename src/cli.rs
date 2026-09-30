@@ -60,11 +60,11 @@ pub enum Commands {
 		#[arg(short = 's', long, value_enum, default_value = "binary")]
 		format: SizeFormat,
 	},
-	/// Sync every tracked account that isn't frozen, plus individually tracked repos
+	/// Sync every tracked account that isn't frozen and every tracked repo, or just the named ones
 	#[command(alias = "run")]
 	Sync {
-		/// GitHub accounts to start tracking before syncing
-		#[arg(value_name = "USERNAME")]
+		/// Accounts or repos to sync, even if frozen; untracked ones are added first
+		#[arg(value_name = "TARGET")]
 		users: Vec<String>,
 		/// Include forked repositories for this sync only (does not save to config)
 		#[arg(long)]

@@ -18,7 +18,8 @@ use self::{
 };
 use crate::{
 	config::{Config, State, TrackedAccount},
-	forge::{Forge, RemoteRepo, archive_path, split_host},
+	forge::{Forge, RemoteRepo, Target, archive_path, split_host},
+	track,
 	utils::plural,
 };
 
@@ -52,21 +53,37 @@ struct SyncState<'a> {
 	totals: &'a mut Totals,
 }
 
-pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
+/// Syncs everything tracked, or with `targets`, just those accounts and repos (frozen or not).
+/// Targets that aren't tracked yet are added first, exactly as `gitkeep add` would.
+pub async fn run(targets: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
+	if targets.is_empty() {
+		return run_all(opts, verbosity).await;
+	}
+	let config = Config::load().context("Could not load config")?;
+	let untracked: Vec<String> =
+		targets.iter().filter(|t| matches!(classify(&config, t), Named::Untracked)).cloned().collect();
+	if !untracked.is_empty() {
+		track::add(&untracked, false, false, None).await?;
+	}
 	let mut config = Config::load().context("Could not load config")?;
-	let mut updated = false;
-	for user in extra_users {
-		if let Some((host, path)) = split_host(user) {
-			if !config.track.iter().any(|u| u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)) {
-				bail!("'{user}' is not tracked yet. Use 'gitkeep add https://{user}' to start tracking it.");
-			}
-		} else if config.add_account(None, user, false, false, None) {
-			updated = true;
+	let mut accounts: Vec<TrackedAccount> = Vec::new();
+	let mut pinned: Vec<String> = Vec::new();
+	for target in targets {
+		match classify(&config, target) {
+			Named::Account(account) => accounts.push(account),
+			Named::Pin(pin) if !pinned.contains(&pin) => pinned.push(pin),
+			Named::Pin(_) | Named::Untracked => {}
 		}
 	}
-	if updated {
-		config.save().context("Could not update config")?;
+	if accounts.is_empty() && pinned.is_empty() {
+		println!("Nothing to sync.");
+		return Ok(());
 	}
+	sync_all(&mut config, &accounts, &pinned, opts, verbosity).await
+}
+
+async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
+	let mut config = Config::load().context("Could not load config")?;
 	if config.track.is_empty() && config.pinned.is_empty() {
 		bail!(
 			"Nothing to sync. Use 'gitkeep add <username>' to start building your library, \
@@ -75,12 +92,35 @@ pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity
 	}
 	let to_sync: Vec<TrackedAccount> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
 	if to_sync.is_empty() && config.pinned.is_empty() {
-		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
+		println!("All tracked accounts are frozen. Use 'gitkeep sync <account>' to sync one anyway.");
 		return Ok(());
 	}
 	let pinned_to_sync: Vec<String> =
 		config.pinned.iter().map(|p| &p.full_name).filter(|p| !to_sync.iter().any(|t| t.covers(p))).cloned().collect();
 	sync_all(&mut config, &to_sync, &pinned_to_sync, opts, verbosity).await
+}
+
+/// What a `sync <target>` argument refers to in the config.
+enum Named {
+	Account(TrackedAccount),
+	Pin(String),
+	Untracked,
+}
+
+/// Matches a `sync` argument against what's tracked. A repo inside a tracked account means that
+/// account, unless the repo was removed from it.
+fn classify(config: &Config, arg: &str) -> Named {
+	let key = Target::parse(arg).key();
+	if let Some(account) = config.track.iter().find(|u| matches_target(u, &key)) {
+		return Named::Account(account.clone());
+	}
+	if let Some(pin) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(&key)) {
+		return Named::Pin(pin.full_name.clone());
+	}
+	match config.track.iter().find(|u| u.covers(&key)) {
+		Some(owner) if !config.is_excluded(&key) => Named::Account(owner.clone()),
+		_ => Named::Untracked,
+	}
 }
 
 pub async fn run_for(targets: &[String], opts: SyncOptions) -> Result<()> {
@@ -328,6 +368,57 @@ mod tests {
 	#[test]
 	fn resolve_submodules_force_beats_everything() {
 		assert!(resolve_submodules(true, Some(false), false));
+	}
+
+	fn named(config: &Config, arg: &str) -> String {
+		match classify(config, arg) {
+			Named::Account(a) => format!("account {}", a.display_name()),
+			Named::Pin(p) => format!("pin {p}"),
+			Named::Untracked => "untracked".to_string(),
+		}
+	}
+
+	#[test]
+	fn classify_matches_frozen_accounts_too() {
+		let mut config = Config::default();
+		config.add_account(None, "Alice", false, true, None);
+		assert_eq!(named(&config, "alice"), "account Alice");
+	}
+
+	#[test]
+	fn classify_matches_pins_ignoring_case() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("bob/Repo", None, None);
+		assert_eq!(named(&config, "Bob/repo"), "pin bob/Repo");
+	}
+
+	#[test]
+	fn classify_maps_repo_to_its_tracked_owner() {
+		let mut config = Config::default();
+		config.add_account(None, "alice", false, false, None);
+		assert_eq!(named(&config, "alice/repo"), "account alice");
+	}
+
+	#[test]
+	fn classify_treats_removed_repo_as_untracked() {
+		let mut config = Config::default();
+		config.add_account(None, "alice", false, false, None);
+		config.exclude_repo("alice/big");
+		assert_eq!(named(&config, "alice/big"), "untracked");
+	}
+
+	#[test]
+	fn classify_distinguishes_hosts() {
+		let mut config = Config::default();
+		config.add_account(Some("gitlab.example.com"), "alice", false, false, None);
+		assert_eq!(named(&config, "alice"), "untracked");
+		assert_eq!(named(&config, "https://gitlab.example.com/alice"), "account gitlab.example.com/alice");
+		assert_eq!(named(&config, "gitlab.example.com/alice/proj"), "account gitlab.example.com/alice");
+	}
+
+	#[test]
+	fn classify_untracked_name() {
+		assert_eq!(named(&Config::default(), "carol"), "untracked");
 	}
 
 	#[test]

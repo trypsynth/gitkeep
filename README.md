@@ -69,8 +69,8 @@ token = "glpat-..."
 | `--no-sync` | Add to the tracked list without cloning right now, overriding the config default |
 | `--sync` | Clone immediately after adding, overriding a `no_sync = true` config default |
 
-### `sync [USERNAME]...`  _(alias: `run`)_
-Sync all tracked accounts. Passing usernames adds them to the tracked list and syncs them immediately (same as `add` + `sync`).
+### `sync [TARGET]...`  _(alias: `run`)_
+Sync every tracked account that isn't frozen, plus individually tracked repos. Pass targets (in the same forms as `add`) to sync only those instead, including frozen accounts; naming a repo inside a tracked account syncs that account. Targets that aren't tracked yet are added first, just like `add`.
 
 | Flag | Description |
 |------|-------------|
