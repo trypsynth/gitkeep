@@ -11,6 +11,8 @@ use octocrab::{Octocrab, OctocrabBuilder};
 use serde::{Deserialize, Serialize};
 use toml::{from_str, to_string_pretty};
 
+use crate::gitlab::split_host;
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(v: &bool) -> bool {
 	!*v
@@ -32,6 +34,9 @@ pub struct Config {
 	pub no_sync: bool,
 	#[serde(default)]
 	pub track: Vec<TrackedUser>,
+	/// Personal access tokens for GitLab instances, keyed by host (e.g. "gitlab.com").
+	#[serde(default, skip_serializing_if = "HashMap::is_empty")]
+	pub gitlab_tokens: HashMap<String, String>,
 	/// Repos under a fully tracked account that were removed with `gitkeep remove user/repo` and
 	/// are left out of syncs. Read from the pre-0.3.0 `skipped` key too.
 	#[serde(default, alias = "skipped", skip_serializing_if = "HashSet::is_empty")]
@@ -53,11 +58,35 @@ pub struct TrackedUser {
 	/// Overrides the global `submodules` default for this account. `None` inherits it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub submodules: Option<bool>,
+	/// GitLab host this account lives on (e.g. "gitlab.example.com"). `None` means GitHub.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub host: Option<String>,
 }
 
 impl TrackedUser {
 	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
-		Self { name: name.into(), forks, frozen, id: None, submodules: None }
+		Self { name: name.into(), forks, frozen, id: None, submodules: None, host: None }
+	}
+
+	pub fn display_name(&self) -> String {
+		self.host.as_ref().map_or_else(|| self.name.clone(), |h| format!("{h}/{}", self.name))
+	}
+
+	/// True when this tracked account's sync already includes `full_name` (a pin key),
+	/// so an individual pin would be redundant. For GitLab entries a subgroup project is
+	/// covered too, since group syncs include subgroups.
+	pub fn covers(&self, full_name: &str) -> bool {
+		match (&self.host, split_host(full_name)) {
+			(Some(h), Some((host, path))) => {
+				h == host
+					&& path.rsplit_once('/').is_some_and(|(owner, _)| {
+						owner.eq_ignore_ascii_case(&self.name)
+							|| owner.to_lowercase().starts_with(&format!("{}/", self.name.to_lowercase()))
+					})
+			}
+			(None, None) => full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(&self.name)),
+			_ => false,
+		}
 	}
 }
 
@@ -145,8 +174,26 @@ impl Config {
 		)
 	}
 
+	pub fn gitlab_token(&self, host: &str) -> Option<String> {
+		self.gitlab_tokens.get(host).cloned()
+	}
+
 	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool, submodules: Option<bool>) -> bool {
-		let changed = if let Some(entry) = self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user)) {
+		self.add_user_on(None, user, forks, frozen, submodules)
+	}
+
+	pub fn add_user_on(
+		&mut self,
+		host: Option<&str>,
+		user: &str,
+		forks: bool,
+		frozen: bool,
+		submodules: Option<bool>,
+	) -> bool {
+		let display = host.map_or_else(|| user.to_string(), |h| format!("{h}/{user}"));
+		let changed = if let Some(entry) =
+			self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user) && u.host.as_deref() == host)
+		{
 			let canonical_changed = if entry.name == user {
 				false
 			} else {
@@ -155,37 +202,38 @@ impl Config {
 			};
 			let mut local_changed = if forks && !entry.forks {
 				entry.forks = true;
-				println!("Forks enabled for {user}.");
+				println!("Forks enabled for {display}.");
 				true
 			} else {
 				false
 			};
 			if frozen && !entry.frozen {
 				entry.frozen = true;
-				println!("Account frozen for {user}. Updates will be skipped.");
+				println!("Account frozen for {display}. Updates will be skipped.");
 				local_changed = true;
 			} else if !frozen && entry.frozen {
 				entry.frozen = false;
-				println!("Account unfrozen for {user}. Updates will be included.");
+				println!("Account unfrozen for {display}. Updates will be included.");
 				local_changed = true;
 			}
 			if let Some(submodules) = submodules
 				&& entry.submodules != Some(submodules)
 			{
 				entry.submodules = Some(submodules);
-				println!("Submodules {} for {user}.", if submodules { "enabled" } else { "disabled" });
+				println!("Submodules {} for {display}.", if submodules { "enabled" } else { "disabled" });
 				local_changed = true;
 			}
 			if !local_changed && !canonical_changed {
-				println!("Already tracking {user}.");
+				println!("Already tracking {display}.");
 			}
 			local_changed || canonical_changed
 		} else {
 			let mut entry = TrackedUser::with_options(user, forks, frozen);
 			entry.submodules = submodules;
+			entry.host = host.map(ToString::to_string);
 			println!(
 				"Now tracking {}{}{}",
-				user,
+				display,
 				if forks { " (forks included)" } else { "" },
 				if frozen { " (frozen)" } else { "" }
 			);
@@ -237,6 +285,11 @@ impl Config {
 	/// Drops every exclusion under `user` (case-insensitive), e.g. once the whole account is removed.
 	pub fn remove_exclusions_for_user(&mut self, user: &str) {
 		self.excluded.retain(|r| !r.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)));
+	}
+
+	/// Drops every exclusion that `tracked`'s sync would include, e.g. once that account is removed.
+	pub fn remove_exclusions_covered(&mut self, tracked: &TrackedUser) {
+		self.excluded.retain(|r| !tracked.covers(r));
 	}
 
 	/// Pins a repo, optionally recording its stable GitHub id (used to re-resolve it after a
@@ -292,6 +345,14 @@ impl Config {
 			.collect();
 		matching.sort();
 		matching
+	}
+
+	/// Removes all pinned repos already covered by `tracked` and returns their full names.
+	pub fn remove_pins_covered(&mut self, tracked: &TrackedUser) -> Vec<String> {
+		let to_remove: Vec<String> =
+			self.pinned.iter().filter(|p| tracked.covers(&p.full_name)).map(|p| p.full_name.clone()).collect();
+		self.pinned.retain(|p| !to_remove.contains(&p.full_name));
+		to_remove
 	}
 
 	/// Removes all pinned repos owned by `user` (case-insensitive) and returns their full names.
@@ -727,6 +788,109 @@ mod tests {
 		assert!(config.is_pinned("bob/repo"));
 		assert!(!config.is_pinned("alice/repo"));
 		assert_eq!(config.pinned_id("bob/repo"), Some(7));
+	}
+
+	#[test]
+	fn tracked_user_host_defaults_to_none_for_legacy_toml() {
+		let user: TrackedUser = toml::from_str(r#"name = "alice""#).unwrap();
+		assert_eq!(user.host, None);
+	}
+
+	#[test]
+	fn tracked_user_host_round_trips() {
+		let user = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp", false, false)
+		};
+		let raw = toml::to_string(&user).unwrap();
+		let back: TrackedUser = toml::from_str(&raw).unwrap();
+		assert_eq!(back.host.as_deref(), Some("gitlab.example.com"));
+	}
+
+	#[test]
+	fn config_without_gitlab_omits_new_fields_on_save() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		let raw = toml::to_string(&config).unwrap();
+		assert!(!raw.contains("gitlab_tokens"), "got: {raw}");
+		assert!(!raw.contains("host"), "got: {raw}");
+	}
+
+	#[test]
+	fn add_user_on_tracks_same_name_on_different_hosts_separately() {
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		assert!(config.add_user_on(Some("gitlab.example.com"), "alice", false, false, None));
+		assert_eq!(config.track.len(), 2);
+	}
+
+	#[test]
+	fn add_user_on_is_idempotent_per_host() {
+		let mut config = Config::default();
+		config.add_user_on(Some("gitlab.example.com"), "alice", false, false, None);
+		assert!(!config.add_user_on(Some("gitlab.example.com"), "alice", false, false, None));
+	}
+
+	#[test]
+	fn display_name_includes_host_for_gitlab() {
+		let user = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp", false, false)
+		};
+		assert_eq!(user.display_name(), "gitlab.example.com/grp");
+	}
+
+	#[test]
+	fn covers_github_pin_by_owner() {
+		let user = TrackedUser::with_options("Alice", false, false);
+		assert!(user.covers("alice/repo"));
+		assert!(!user.covers("bob/repo"));
+	}
+
+	#[test]
+	fn covers_rejects_cross_provider() {
+		let github = TrackedUser::with_options("alice", false, false);
+		assert!(!github.covers("gitlab.example.com/alice/repo"));
+		let gitlab = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("alice", false, false)
+		};
+		assert!(!gitlab.covers("alice/repo"));
+	}
+
+	#[test]
+	fn covers_gitlab_pin_including_subgroups() {
+		let user = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp", false, false)
+		};
+		assert!(user.covers("gitlab.example.com/grp/proj"));
+		assert!(user.covers("gitlab.example.com/grp/sub/proj"));
+		assert!(!user.covers("gitlab.example.com/other/proj"));
+		assert!(!user.covers("gitlab.other.com/grp/proj"));
+	}
+
+	#[test]
+	fn covers_gitlab_does_not_match_sibling_prefix() {
+		let user = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp", false, false)
+		};
+		assert!(!user.covers("gitlab.example.com/grpx/proj"));
+	}
+
+	#[test]
+	fn remove_pins_covered_removes_gitlab_pins() {
+		let mut config = Config::default();
+		config.pin_repo_with_options("gitlab.example.com/grp/proj", None, None);
+		config.pin_repo_with_options("gitlab.example.com/other/proj", None, None);
+		let tracked = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp", false, false)
+		};
+		let removed = config.remove_pins_covered(&tracked);
+		assert_eq!(removed, vec!["gitlab.example.com/grp/proj".to_string()]);
+		assert!(config.is_pinned("gitlab.example.com/other/proj"));
 	}
 
 	#[test]

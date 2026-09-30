@@ -15,7 +15,7 @@ pub enum Commands {
 	Init,
 	/// Authenticate with a GitHub personal access token
 	Login,
-	/// Add GitHub users, orgs, or individual repos (user/repo) to the archive
+	/// Add GitHub users, orgs, repos (user/repo), or GitLab URLs to the archive
 	Add {
 		#[arg(value_name = "TARGET", required = true)]
 		users: Vec<String>,

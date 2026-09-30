@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::{
 	config::{Config, State, TrackedUser},
+	gitlab,
 	utils::plural,
 };
 
@@ -61,18 +62,62 @@ struct SyncState<'a> {
 
 /// Identifying details for a single repo being cloned or pulled.
 struct RepoInfo<'a> {
-	username: &'a str,
-	name: &'a str,
 	full_name: &'a str,
 	id: u64,
 	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Provider-neutral details for one remote repository, from either GitHub or GitLab.
+/// `full_name` is the state/skip key and display name; `rel_dir` is the repo's
+/// '/'-separated path under the archive root (identical to `full_name` for GitLab,
+/// canonical `username/name` for GitHub).
+struct RemoteRepo {
+	full_name: String,
+	rel_dir: String,
+	id: u64,
+	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+	fork: bool,
+	clone_url: Option<String>,
+	ssh_url: Option<String>,
+}
+
+impl RemoteRepo {
+	fn from_github(repo: &Repository, username: &str) -> Self {
+		Self {
+			full_name: repo.full_name.clone().unwrap_or_else(|| format!("{username}/{}", repo.name)),
+			rel_dir: format!("{username}/{}", repo.name),
+			id: repo.id.into_inner(),
+			pushed_at: repo.pushed_at,
+			fork: repo.fork.unwrap_or(false),
+			clone_url: repo.clone_url.as_ref().map(ToString::to_string),
+			ssh_url: repo.ssh_url.clone(),
+		}
+	}
+
+	fn from_gitlab(project: &gitlab::Project, host: &str) -> Self {
+		Self {
+			full_name: format!("{host}/{}", project.path_with_namespace),
+			rel_dir: format!("{host}/{}", project.path_with_namespace),
+			id: project.id,
+			// GitLab's `last_activity_at` updates at most once an hour, so using it to skip pulls could
+			// miss recent pushes. Leaving this unset makes every sync pull.
+			pushed_at: None,
+			fork: project.forked_from.is_some(),
+			clone_url: project.http_url_to_repo.clone(),
+			ssh_url: project.ssh_url_to_repo.clone(),
+		}
+	}
 }
 
 pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
 	for user in extra_users {
-		if config.add_user(user, false, false, None) {
+		if let Some((host, path)) = gitlab::split_host(user) {
+			if !config.track.iter().any(|u| u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)) {
+				bail!("'{user}' is not tracked yet. Use 'gitkeep add https://{user}' to start tracking it.");
+			}
+		} else if config.add_user(user, false, false, None) {
 			updated = true;
 		}
 	}
@@ -91,21 +136,15 @@ pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity
 		return Ok(());
 	}
 	// Include pinned repos whose owner is not covered by a tracked user.
-	let tracked_names: Vec<&str> = to_sync.iter().map(|u| u.name.as_str()).collect();
-	let pinned_to_sync: Vec<String> = config
-		.pinned
-		.iter()
-		.map(|p| &p.full_name)
-		.filter(|p| p.split_once('/').is_some_and(|(u, _)| !tracked_names.iter().any(|t| t.eq_ignore_ascii_case(u))))
-		.cloned()
-		.collect();
+	let pinned_to_sync: Vec<String> =
+		config.pinned.iter().map(|p| &p.full_name).filter(|p| !to_sync.iter().any(|t| t.covers(p))).cloned().collect();
 	sync_all(&mut config, &to_sync, &pinned_to_sync, opts, verbosity).await
 }
 
 pub async fn run_for(targets: &[String], opts: SyncOptions) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let to_sync: Vec<TrackedUser> =
-		config.track.iter().filter(|u| targets.iter().any(|t| t.eq_ignore_ascii_case(&u.name))).cloned().collect();
+		config.track.iter().filter(|u| targets.iter().any(|t| matches_target(u, t))).cloned().collect();
 	if to_sync.is_empty() {
 		println!("No matching users found to sync.");
 		return Ok(());
@@ -274,6 +313,45 @@ mod tests {
 	}
 
 	#[test]
+	fn matches_target_plain_name_matches_github_only() {
+		let github = TrackedUser::with_options("alice", false, false);
+		let gitlab = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("alice", false, false)
+		};
+		assert!(matches_target(&github, "Alice"));
+		assert!(!matches_target(&gitlab, "Alice"));
+	}
+
+	#[test]
+	fn matches_target_host_qualified_matches_gitlab_entry() {
+		let gitlab = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp/sub", false, false)
+		};
+		assert!(matches_target(&gitlab, "gitlab.example.com/grp/sub"));
+		assert!(!matches_target(&gitlab, "gitlab.other.com/grp/sub"));
+	}
+
+	#[test]
+	fn remote_repo_from_gitlab_prefixes_host() {
+		let project = gitlab::Project {
+			id: 7,
+			path_with_namespace: "grp/proj".to_string(),
+			http_url_to_repo: Some("https://gitlab.example.com/grp/proj.git".to_string()),
+			ssh_url_to_repo: Some("git@gitlab.example.com:grp/proj.git".to_string()),
+			forked_from: None,
+		};
+		let repo = RemoteRepo::from_gitlab(&project, "gitlab.example.com");
+		assert_eq!(repo.full_name, "gitlab.example.com/grp/proj");
+		assert_eq!(repo.rel_dir, "gitlab.example.com/grp/proj");
+		assert!(!repo.fork);
+		assert!(repo.pushed_at.is_none(), "GitLab repos must always be pulled");
+		assert_eq!(clone_url(&repo, false).unwrap(), "https://gitlab.example.com/grp/proj.git");
+		assert_eq!(clone_url(&repo, true).unwrap(), "git@gitlab.example.com:grp/proj.git");
+	}
+
+	#[test]
 	fn identity_mismatch_detects_unrelated_histories() {
 		assert!(indicates_repo_identity_mismatch(b"fatal: refusing to merge unrelated histories"));
 	}
@@ -355,12 +433,26 @@ mod tests {
 	}
 }
 
+/// True when a `sync <target>` argument names this tracked account: a plain name matches
+/// a GitHub account, a `host/path` name matches a GitLab one.
+fn matches_target(user: &TrackedUser, target: &str) -> bool {
+	if let Some((host, path)) = gitlab::split_host(target) {
+		user.host.as_deref() == Some(host) && user.name.eq_ignore_ascii_case(path)
+	} else {
+		user.host.is_none() && user.name.eq_ignore_ascii_case(target)
+	}
+}
+
 async fn sync_one(
 	user: &TrackedUser,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
 ) -> bool {
+	if let Some(host) = user.host.clone() {
+		sync_one_gitlab(user, &host, ctx, config, sync_state).await;
+		return false;
+	}
 	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {}...", user.name);
 	}
@@ -415,21 +507,9 @@ async fn sync_one(
 		Ok(repos) => {
 			let include_forks = ctx.opts.force_forks || user.forks;
 			let use_submodules = resolve_submodules(ctx.opts.force_submodules, user.submodules, config.submodules);
-			let fork_count = repos.iter().filter(|r| r.fork.unwrap_or(false)).count();
-			let visible = repos.len() - if include_forks { 0 } else { fork_count };
-			if ctx.verbosity == Verbosity::Verbose {
-				let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), canonical);
-				if !include_forks && fork_count > 0 {
-					let _ = write!(
-						msg,
-						" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
-						plural(fork_count, "fork", "forks"),
-						canonical
-					);
-				}
-				println!("{msg}");
-			}
-			sync_repo_list(repos, &canonical, include_forks, use_submodules, ctx, config, sync_state);
+			let repos: Vec<RemoteRepo> = repos.iter().map(|r| RemoteRepo::from_github(r, &canonical)).collect();
+			report_found(&repos, &canonical, &canonical, include_forks, ctx.verbosity);
+			sync_repo_list(repos, include_forks, use_submodules, ctx, config, sync_state);
 		}
 		Err(e) => {
 			eprintln!("  Could not fetch repositories for {canonical}: {e:#}.");
@@ -439,12 +519,69 @@ async fn sync_one(
 	config_changed
 }
 
+async fn sync_one_gitlab(
+	user: &TrackedUser,
+	host: &str,
+	ctx: SyncContext<'_>,
+	config: &Config,
+	sync_state: &mut SyncState<'_>,
+) {
+	let display = user.display_name();
+	if ctx.verbosity == Verbosity::Verbose {
+		println!("Checking {display}...");
+	}
+	let client = match gitlab::GitLabClient::new(host, config.gitlab_token(host)) {
+		Ok(c) => c,
+		Err(e) => {
+			eprintln!("  Could not connect to {host}: {e:#}.");
+			sync_state.totals.failed += 1;
+			return;
+		}
+	};
+	match client.fetch_namespace_projects(&user.name).await {
+		Ok(projects) => {
+			let include_forks = ctx.opts.force_forks || user.forks;
+			let use_submodules = resolve_submodules(ctx.opts.force_submodules, user.submodules, config.submodules);
+			let repos: Vec<RemoteRepo> = projects.iter().map(|p| RemoteRepo::from_gitlab(p, host)).collect();
+			report_found(&repos, &display, &format!("https://{display}"), include_forks, ctx.verbosity);
+			sync_repo_list(repos, include_forks, use_submodules, ctx, config, sync_state);
+		}
+		Err(e) => {
+			eprintln!("  Could not fetch repositories for {display}: {e:#}.");
+			sync_state.totals.failed += 1;
+		}
+	}
+}
+
+/// Prints the verbose "Found N repositories" line, with a fork-skip hint when relevant.
+fn report_found(repos: &[RemoteRepo], display: &str, add_target: &str, include_forks: bool, verbosity: Verbosity) {
+	if verbosity != Verbosity::Verbose {
+		return;
+	}
+	let fork_count = repos.iter().filter(|r| r.fork).count();
+	let visible = repos.len() - if include_forks { 0 } else { fork_count };
+	let mut msg = format!("Found {} for {}.", plural(visible, "repository", "repositories"), display);
+	if !include_forks && fork_count > 0 {
+		let _ = write!(
+			msg,
+			" Skipping {}. Use 'gitkeep add --forks {}' to include them.",
+			plural(fork_count, "fork", "forks"),
+			add_target
+		);
+	}
+	println!("{msg}");
+}
+
 async fn sync_one_pinned(
 	full_name: &str,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
 ) -> bool {
+	if let Some((host, path)) = gitlab::split_host(full_name) {
+		sync_one_pinned_gitlab(full_name, host, path, ctx, config, sync_state).await;
+		return false;
+	}
 	let Some((user, name)) = full_name.split_once('/') else { return false };
 	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {full_name}...");
@@ -494,33 +631,59 @@ async fn sync_one_pinned(
 	}
 
 	let owner = repo_full_name.split_once('/').map_or_else(|| user.to_string(), |(u, _)| u.to_string());
-	sync_repo_list(vec![repo], &owner, true, use_submodules, ctx, config, sync_state);
+	let repos = vec![RemoteRepo::from_github(&repo, &owner)];
+	sync_repo_list(repos, true, use_submodules, ctx, config, sync_state);
 	config_changed
 }
 
+async fn sync_one_pinned_gitlab(
+	full_name: &str,
+	host: &str,
+	path: &str,
+	ctx: SyncContext<'_>,
+	config: &Config,
+	sync_state: &mut SyncState<'_>,
+) {
+	if ctx.verbosity == Verbosity::Verbose {
+		println!("Checking {full_name}...");
+	}
+	let use_submodules =
+		resolve_submodules(ctx.opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
+	let client = match gitlab::GitLabClient::new(host, config.gitlab_token(host)) {
+		Ok(c) => c,
+		Err(e) => {
+			eprintln!("  Could not connect to {host}: {e:#}.");
+			sync_state.totals.failed += 1;
+			return;
+		}
+	};
+	match client.fetch_project(path).await {
+		Ok(project) => {
+			let repos = vec![RemoteRepo::from_gitlab(&project, host)];
+			sync_repo_list(repos, true, use_submodules, ctx, config, sync_state);
+		}
+		Err(e) => {
+			eprintln!("  Could not fetch {full_name}: {e:#}.");
+			sync_state.totals.failed += 1;
+		}
+	}
+}
+
 fn sync_repo_list(
-	repos: Vec<Repository>,
-	username: &str,
+	repos: Vec<RemoteRepo>,
 	include_forks: bool,
 	use_submodules: bool,
 	ctx: SyncContext<'_>,
 	config: &Config,
 	sync_state: &mut SyncState<'_>,
 ) {
-	let user_dir = ctx.archive_dir.join(username);
-	if let Err(e) = fs::create_dir_all(&user_dir) {
-		eprintln!("  Could not create directory for {username}: {e}.");
-		sync_state.totals.failed += repos.len();
-		return;
-	}
 	for repo in repos {
-		let name = &repo.name;
-		let full_name = repo.full_name.as_deref().unwrap_or(name.as_str());
+		let full_name = repo.full_name.as_str();
 		if config.is_excluded(full_name) {
 			sync_state.totals.excluded += 1;
 			continue;
 		}
-		if repo.fork.unwrap_or(false) && !include_forks {
+		if repo.fork && !include_forks {
 			sync_state.totals.excluded += 1;
 			continue;
 		}
@@ -528,7 +691,8 @@ fn sync_repo_list(
 			sync_state.totals.excluded += 1;
 			continue;
 		};
-		let repo_dir = user_dir.join(name.as_str());
+		let mut repo_dir = ctx.archive_dir.to_path_buf();
+		repo_dir.extend(repo.rel_dir.split('/'));
 		let already_cloned = repo_dir.exists();
 		if already_cloned && ctx.opts.new_only {
 			sync_state.totals.excluded += 1;
@@ -538,12 +702,19 @@ fn sync_repo_list(
 			sync_state.totals.excluded += 1;
 			continue;
 		}
-		let info = RepoInfo { username, name, full_name, id: repo.id.into_inner(), pushed_at: repo.pushed_at };
+		let info = RepoInfo { full_name, id: repo.id, pushed_at: repo.pushed_at };
 		if already_cloned {
 			pull_and_record(&repo_dir, &url, use_submodules, ctx.verbosity, &info, sync_state);
 		} else {
+			if let Some(parent) = repo_dir.parent()
+				&& let Err(e) = fs::create_dir_all(parent)
+			{
+				eprintln!("  Could not create directory for {full_name}: {e}.");
+				sync_state.totals.failed += 1;
+				continue;
+			}
 			if ctx.verbosity == Verbosity::Verbose {
-				println!("Cloning {username}/{name}...");
+				println!("Cloning {full_name}...");
 			}
 			clone_and_record(&url, &repo_dir, use_submodules, ctx.verbosity, "clone", &info, sync_state);
 		}
@@ -563,7 +734,7 @@ fn pull_and_record(
 		&& stored_id != info.id
 	{
 		if verbosity != Verbosity::Quiet {
-			println!("  {}/{} was recreated as a different repository, re-cloning...", info.username, info.name);
+			println!("  {} was recreated as a different repository, re-cloning...", info.full_name);
 		}
 		reclone(url, repo_dir, use_submodules, verbosity, info, sync_state);
 		return;
@@ -574,16 +745,16 @@ fn pull_and_record(
 		return;
 	}
 	if verbosity == Verbosity::Verbose {
-		println!("Pulling {}/{}...", info.username, info.name);
+		println!("Pulling {}...", info.full_name);
 	}
 	match git_pull(repo_dir, verbosity) {
 		PullOutcome::Updated => {
 			sync_state.state.mark_synced(info.full_name, info.pushed_at, info.id);
 			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
-				eprintln!("  Could not update submodules for {}/{}: {e:#}.", info.username, info.name);
+				eprintln!("  Could not update submodules for {}: {e:#}.", info.full_name);
 			}
 			if verbosity == Verbosity::Normal {
-				sync_state.totals.updated_repos.push(format!("{}/{}", info.username, info.name));
+				sync_state.totals.updated_repos.push(info.full_name.to_string());
 			}
 			sync_state.totals.pulled_updated += 1;
 		}
@@ -593,12 +764,12 @@ fn pull_and_record(
 		}
 		PullOutcome::Fatal => {
 			if verbosity == Verbosity::Verbose {
-				println!("  Pull failed for {}/{}, re-cloning...", info.username, info.name);
+				println!("  Pull failed for {}, re-cloning...", info.full_name);
 			}
 			reclone(url, repo_dir, use_submodules, verbosity, info, sync_state);
 		}
 		PullOutcome::Failed(e) => {
-			eprintln!("  Failed to pull {}/{}: {e:#}.", info.username, info.name);
+			eprintln!("  Failed to pull {}: {e:#}.", info.full_name);
 			sync_state.totals.failed += 1;
 		}
 	}
@@ -635,15 +806,15 @@ fn clone_and_record(
 		Ok(()) => {
 			sync_state.state.mark_synced(info.full_name, info.pushed_at, info.id);
 			if use_submodules && let Err(e) = update_submodules(repo_dir, verbosity) {
-				eprintln!("  Could not clone submodules for {}/{}: {e:#}.", info.username, info.name);
+				eprintln!("  Could not clone submodules for {}: {e:#}.", info.full_name);
 			}
 			if verbosity == Verbosity::Normal {
-				sync_state.totals.new_repos.push(format!("{}/{}", info.username, info.name));
+				sync_state.totals.new_repos.push(info.full_name.to_string());
 			}
 			sync_state.totals.cloned += 1;
 		}
 		Err(e) => {
-			eprintln!("  Failed to {action} {}/{}: {e:#}.", info.username, info.name);
+			eprintln!("  Failed to {action} {}: {e:#}.", info.full_name);
 			sync_state.totals.failed += 1;
 		}
 	}
@@ -727,8 +898,8 @@ async fn fetch_public(client: &Octocrab, username: &str) -> Result<Vec<Repositor
 	client.all_pages(page).await.with_context(|| format!("Could not retrieve all repository pages for {username}"))
 }
 
-fn clone_url(repo: &Repository, use_ssh: bool) -> Option<String> {
-	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.as_ref().map(ToString::to_string) }
+fn clone_url(repo: &RemoteRepo, use_ssh: bool) -> Option<String> {
+	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.clone() }
 }
 
 fn should_skip_pull(

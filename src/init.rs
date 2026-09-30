@@ -26,6 +26,7 @@ pub fn run() -> Result<()> {
 	let clone_on_add = confirm("Clone repos immediately after adding them?", !existing.no_sync)?;
 	let config = Config {
 		token: existing.token,
+		gitlab_tokens: existing.gitlab_tokens,
 		archive_dir,
 		use_ssh,
 		submodules,

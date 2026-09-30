@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added GitLab support: `gitkeep add <url>` tracks a group (including subgroups), users, or single projects on any GitLab instance. GitLab archives live under `<host>/<namespace>/<project>`; `remove`, `sync`, and `list` accept the host-qualified `host/namespace/project` form or the full URL. Optional per-host tokens can be set in the config.
+
 ## 0.2.1
 
 - Added `gitkeep size` to show archive disk usage

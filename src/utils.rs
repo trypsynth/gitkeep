@@ -11,12 +11,13 @@ pub fn plural(n: usize, singular: &str, plural: &str) -> String {
 	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
 }
 
-/// Expands `owner/a,b,c` into one `owner/name` target per repo (GitHub repo names can't contain
-/// commas). Other targets pass through unchanged.
+/// Expands `owner/a,b,c` into one `owner/name` target per repo (repo names can't contain commas).
+/// The list follows the last `/`, so `host/group/a,b` works for GitLab too. Other targets pass
+/// through unchanged.
 pub fn expand_targets(args: Vec<String>) -> Result<Vec<String>> {
 	let mut out = Vec::with_capacity(args.len());
 	for target in args {
-		let Some((owner, list)) = target.split_once('/').filter(|(_, rest)| rest.contains(',')) else {
+		let Some((owner, list)) = target.rsplit_once('/').filter(|(_, rest)| rest.contains(',')) else {
 			out.push(target);
 			continue;
 		};
@@ -86,6 +87,14 @@ mod tests {
 	#[test]
 	fn expand_targets_expands_comma_list() {
 		assert_eq!(expand_targets(args(&["daisy/a,b,c"])).unwrap(), args(&["daisy/a", "daisy/b", "daisy/c"]));
+	}
+
+	#[test]
+	fn expand_targets_keeps_nested_owner_path() {
+		assert_eq!(
+			expand_targets(args(&["gitlab.example.com/grp/sub/a,b"])).unwrap(),
+			args(&["gitlab.example.com/grp/sub/a", "gitlab.example.com/grp/sub/b"])
+		);
 	}
 
 	#[test]

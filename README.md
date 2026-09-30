@@ -1,6 +1,6 @@
 # gitkeep
 
-A CLI tool for maintaining local archives of GitHub users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
+A CLI tool for maintaining local archives of GitHub and GitLab users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
 
 ## Download
 
@@ -52,6 +52,13 @@ Authenticate with a GitHub personal access token. Opens the token creation page 
 ### `add <TARGET>...`
 Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again. Several repos from one owner can be listed as `user/a,b,c`.
 
+GitLab targets are given as URLs: `gitkeep add https://gitlab.example.com/some-group` tracks a group (including subgroups), while `gitkeep add https://gitlab.example.com/some-group/project` adds just that one project. GitLab archives are stored under `<host>/<namespace>/<project>`, and everywhere a GitLab repo is referenced (`remove`, `sync`, `list`) uses the same `host/namespace/project` format, or the full URL. Public instances work without authentication; for private repos, add a personal access token to the config by hand:
+
+```toml
+[gitlab_tokens]
+"gitlab.example.com" = "glpat-..."
+```
+
 | Flag | Description |
 |------|-------------|
 | `--forks` | Include forked repositories for these accounts |
@@ -86,7 +93,7 @@ Show the on-disk size of the archive, broken down per account.
 | `-s, --format <FORMAT>` | Unit format: `decimal` (kB/MB/GB, base 1000), `binary` (KiB/MiB/GiB, base 1024, default), or `raw` (exact byte count) |
 
 ### `remove <TARGET>...`  _(alias: `rm`)_
-Stop tracking one or more users, orgs, or repos. Accepts either a plain username/org or `user/repo`. A `user/repo` target can be an individually pinned repo or a single repo under a fully tracked account; the latter is left out of future syncs while the rest of the account keeps syncing (run `gitkeep add user/repo` to undo). Like `add`, it accepts `user/a,b,c` to name several repos from one owner. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
+Stop tracking one or more users, orgs, or repos. Accepts either a plain username/org or `user/repo`. A `user/repo` target can be an individually pinned repo or a single repo under a fully tracked account; the latter is left out of future syncs while the rest of the account keeps syncing (run `gitkeep add user/repo` to undo). Like `add`, it accepts `user/a,b,c` to name several repos from one owner. GitLab projects work the same way as `host/namespace/project` (or the URL), including removing one project from a tracked group. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
 
 | Flag | Description |
 |------|-------------|
