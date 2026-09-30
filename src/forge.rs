@@ -40,7 +40,6 @@ pub enum Forge {
 pub enum Resolved {
 	/// A whole account (user, org, or group), by its canonical name on the forge.
 	Account(String),
-	/// A single repo.
 	Repo(RemoteRepo),
 }
 
@@ -90,8 +89,7 @@ impl Forge {
 		}
 	}
 
-	/// Fetches one repo by its path on the forge, or `None` if it doesn't exist. `id` is the repo's
-	/// stored id, used to follow renames.
+	/// Fetches one repo by its path on the forge. `id` is its stored id, used to follow renames.
 	pub async fn repo(&self, path: &str, id: Option<u64>) -> Result<Option<RemoteRepo>> {
 		match self {
 			Self::GitHub(f) => f.repo(path, id).await,
@@ -131,8 +129,7 @@ impl Target {
 		}
 	}
 
-	/// The name used for this target in the config and in output: `path` on GitHub, `host/path`
-	/// elsewhere.
+	/// The target's key in the config and in output: `path` on GitHub, `host/path` elsewhere.
 	pub fn key(&self) -> String {
 		self.host.as_ref().map_or_else(|| self.path.clone(), |h| format!("{h}/{}", self.path))
 	}

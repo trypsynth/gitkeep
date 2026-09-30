@@ -10,9 +10,7 @@ use crate::{
 /// What `add` recorded, by key, so the caller can sync it right away.
 #[derive(Default)]
 pub struct Added {
-	/// Accounts that are now tracked.
 	pub accounts: Vec<String>,
-	/// Repos that are now individually pinned.
 	pub pinned: Vec<String>,
 	/// Tracked accounts that had a previously removed repo added back.
 	pub restored_owners: Vec<String>,

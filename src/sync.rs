@@ -78,7 +78,6 @@ pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity
 		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
 		return Ok(());
 	}
-	// Include pinned repos whose owner is not covered by a tracked user.
 	let pinned_to_sync: Vec<String> =
 		config.pinned.iter().map(|p| &p.full_name).filter(|p| !to_sync.iter().any(|t| t.covers(p))).cloned().collect();
 	sync_all(&mut config, &to_sync, &pinned_to_sync, opts, verbosity).await

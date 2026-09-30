@@ -28,7 +28,6 @@ impl Http {
 		&self.host
 	}
 
-	/// GETs `path` (starting with `/`) and returns its HTTP status and body.
 	async fn fetch(&self, path: &str) -> Result<(u16, String)> {
 		let response =
 			self.client._get(path).await.map_err(|e| anyhow!("Could not reach {}: {}", self.host, describe(&e)))?;

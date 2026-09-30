@@ -51,9 +51,8 @@ pub fn run(format: SizeFormat) -> Result<()> {
 	Ok(())
 }
 
-/// Recursively sums the apparent size of every regular file under `path`. Symlinks are not
-/// followed (their target size isn't counted), which also avoids infinite loops on symlink
-/// cycles.
+/// Sums the apparent size of every regular file under `path`. Symlinks aren't followed, so
+/// symlink cycles can't loop forever.
 fn dir_size(path: &Path) -> Result<u64> {
 	let mut total = 0u64;
 	for entry in fs::read_dir(path).with_context(|| format!("Could not read directory {}", path.display()))? {

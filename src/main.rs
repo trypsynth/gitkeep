@@ -38,8 +38,7 @@ async fn run_add(
 	} else {
 		None
 	};
-	// --sync / --no-sync override the configured default in either direction;
-	// with neither flag passed, fall back to the config's `no_sync` default.
+	// --sync and --no-sync override the configured default either way.
 	let no_sync = if sync_flag {
 		false
 	} else if no_sync {

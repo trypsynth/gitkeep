@@ -180,9 +180,8 @@ fn apply_exclusion(config: &mut Config, full_name: &str, local_dir: Option<PathB
 	Ok(changed)
 }
 
-/// Looks for a directory directly under `parent` matching `name` (case-insensitively, since GitHub
-/// names aren't case-sensitive but directory lookups on most filesystems are). Used to find the
-/// local copy of an account or repo being removed.
+/// Finds the directory under `parent` named `name`, ignoring case: forge names aren't
+/// case-sensitive, but most filesystems are.
 fn find_dir_ignoring_case(parent: &Path, name: &str) -> Result<Option<PathBuf>> {
 	if !parent.is_dir() {
 		return Ok(None);

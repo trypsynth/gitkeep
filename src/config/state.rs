@@ -23,8 +23,8 @@ pub struct RepoState {
 	pub last_synced_at: DateTime<Utc>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub pushed_at: Option<DateTime<Utc>>,
-	/// Stable GitHub repo id, used to detect an `owner/name` being reused by a different
-	/// repo (e.g. deleted and recreated), which should force a re-clone rather than a pull.
+	/// Stable repo id, used to spot an `owner/name` that was deleted and recreated, which needs a
+	/// re-clone rather than a pull.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
 }

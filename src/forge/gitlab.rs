@@ -48,9 +48,8 @@ impl GitLab {
 		Ok(matches!(http.status("/api/v4/version").await?, 200 | 401))
 	}
 
-	/// Resolves an `add` target path to a whole namespace (group or user) to track or a single
-	/// project to pin. Paths with a slash are checked as a project first, since a project path can
-	/// never be a bare top-level name.
+	/// Resolves an `add` target to a namespace (group or user) or a single project. Paths with a
+	/// slash are tried as a project first, since a project is never a bare top-level name.
 	pub async fn resolve(&self, path: &str) -> Result<Resolved> {
 		if path.contains('/')
 			&& let Some(p) = self.project(path).await?
@@ -82,7 +81,6 @@ impl GitLab {
 		Ok(AccountRepos { name: name.to_string(), id: None, repos })
 	}
 
-	/// Fetches one project by its `namespace/project` path, or `None` if it doesn't exist.
 	pub async fn repo(&self, path: &str) -> Result<Option<RemoteRepo>> {
 		Ok(self.project(path).await?.map(|p| self.remote_repo(&p)))
 	}

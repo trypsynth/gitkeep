@@ -22,14 +22,13 @@ pub struct TrackedAccount {
 	pub forks: bool,
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub frozen: bool,
-	/// Stable GitHub account id, used to re-resolve the account if it gets renamed.
+	/// Stable account id on its forge, used to follow renames.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
 	/// Overrides the global `submodules` default for this account. `None` inherits it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub submodules: Option<bool>,
-	/// Forge host this account lives on (e.g. "gitlab.example.com"), described in `Config::hosts`.
-	/// `None` means GitHub.
+	/// Forge host this account lives on, a key of `Config::hosts`. `None` means GitHub.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub host: Option<String>,
 }
@@ -43,9 +42,8 @@ impl TrackedAccount {
 		self.host.as_ref().map_or_else(|| self.name.clone(), |h| format!("{h}/{}", self.name))
 	}
 
-	/// True when this tracked account's sync already includes `full_name` (a pin key),
-	/// so an individual pin would be redundant. For GitLab entries a subgroup project is
-	/// covered too, since group syncs include subgroups.
+	/// Whether this account's sync already includes `full_name`, including projects in GitLab
+	/// subgroups.
 	pub fn covers(&self, full_name: &str) -> bool {
 		match (&self.host, split_host(full_name)) {
 			(Some(h), Some((host, path))) => {
@@ -64,7 +62,7 @@ impl TrackedAccount {
 #[derive(Debug, Clone, Serialize)]
 pub struct PinnedRepo {
 	pub full_name: String,
-	/// Stable GitHub repository id, used to re-resolve the repo if it or its owner gets renamed.
+	/// Stable repo id on its forge, used to follow renames.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
 	/// Overrides the global `submodules` default for this pin. `None` inherits it.

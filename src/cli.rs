@@ -15,11 +15,11 @@ pub enum Commands {
 	Init,
 	/// Authenticate with a GitHub personal access token
 	Login,
-	/// Add GitHub users, orgs, repos (user/repo), or GitLab URLs to the archive
+	/// Add accounts or single repos: GitHub names (owner, owner/repo), host/path, or URLs
 	Add {
 		#[arg(value_name = "TARGET", required = true)]
 		users: Vec<String>,
-		/// Include forked repositories from these users
+		/// Include forked repositories from these accounts
 		#[arg(long)]
 		forks: bool,
 		/// Do not update these accounts in bulk runs after the initial clone
@@ -38,7 +38,7 @@ pub enum Commands {
 		#[arg(long, conflicts_with = "no_sync")]
 		sync: bool,
 	},
-	/// Stop tracking users, orgs, or repos (user/repo), including single repos of a tracked account
+	/// Stop tracking accounts or repos, including single repos of a tracked account
 	#[command(alias = "rm")]
 	Remove {
 		#[arg(value_name = "TARGET", required = true)]
@@ -50,7 +50,7 @@ pub enum Commands {
 		#[arg(short, long)]
 		yes: bool,
 	},
-	/// Show all tracked users and orgs
+	/// Show all tracked accounts and repos
 	#[command(alias = "ls")]
 	List,
 	/// Show the on-disk size of the archive, broken down per account
@@ -60,10 +60,10 @@ pub enum Commands {
 		#[arg(short = 's', long, value_enum, default_value = "binary")]
 		format: SizeFormat,
 	},
-	/// Sync all tracked users. Optionally pass usernames to add and sync immediately.
+	/// Sync every tracked account that isn't frozen, plus individually tracked repos
 	#[command(alias = "run")]
 	Sync {
-		/// GitHub usernames or orgs to add to the track list and sync right now
+		/// GitHub accounts to start tracking before syncing
 		#[arg(value_name = "USERNAME")]
 		users: Vec<String>,
 		/// Include forked repositories for this sync only (does not save to config)

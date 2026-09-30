@@ -45,11 +45,8 @@ pub fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 	}
 }
 
-/// True when a failed `git pull`'s stderr shows the local checkout no longer matches what's on
-/// the remote — e.g. `owner/name` was deleted and recreated as an unrelated repo, so the branch
-/// it used to track is gone or the histories share no common ancestor. Distinguishes that
-/// permanent case (which should trigger a re-clone) from transient failures like a network or
-/// auth error (which should just be reported).
+/// Whether a failed `git pull`'s stderr shows the checkout no longer matches the remote (e.g. the
+/// repo was deleted and recreated), which needs a re-clone, unlike a network or auth failure.
 pub fn indicates_repo_identity_mismatch(stderr: &[u8]) -> bool {
 	let stderr = String::from_utf8_lossy(stderr);
 	stderr.contains("unrelated histories") || stderr.contains("but no such ref was fetched")

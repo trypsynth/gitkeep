@@ -25,12 +25,10 @@ pub struct Config {
 	pub archive_dir: Option<String>,
 	#[serde(default)]
 	pub use_ssh: bool,
-	/// Global default for whether to recurse into submodules on clone/pull. Overridden
-	/// per-account or per-pin by `TrackedAccount.submodules` / `PinnedRepo.submodules`.
+	/// Global default for recursing into submodules; accounts and pins can override it.
 	#[serde(default)]
 	pub submodules: bool,
-	/// Global default for whether `add` should skip cloning immediately after adding.
-	/// Overridden per-invocation by `--sync` / `--no-sync`.
+	/// Global default for skipping the clone right after `add`; `--sync`/`--no-sync` override it.
 	#[serde(default)]
 	pub no_sync: bool,
 	#[serde(default)]
@@ -236,9 +234,7 @@ impl Config {
 		self.excluded.retain(|r| !tracked.covers(r));
 	}
 
-	/// Pins a repo, optionally recording its stable GitHub id (used to re-resolve it after a
-	/// rename) and a per-pin submodules override. Returns `true` if this is a new pin, `false`
-	/// if already pinned.
+	/// Pins a repo with its stable id and submodules override. Returns `false` if already pinned.
 	pub fn pin_repo_with_options(&mut self, full_name: &str, id: Option<u64>, submodules: Option<bool>) -> bool {
 		if self.is_pinned(full_name) {
 			return false;
@@ -247,7 +243,6 @@ impl Config {
 		true
 	}
 
-	/// Returns `true` if the repo was pinned and is now removed, `false` if it wasn't pinned.
 	/// Unpins a repo (case-insensitively) and returns its stored name, or `None` if it wasn't pinned.
 	pub fn unpin_repo(&mut self, full_name: &str) -> Option<String> {
 		let index = self.pinned.iter().position(|p| p.full_name.eq_ignore_ascii_case(full_name))?;
@@ -258,18 +253,15 @@ impl Config {
 		self.pinned.iter().any(|p| p.full_name == full_name)
 	}
 
-	/// Returns the stored GitHub id for a pinned repo, if any.
 	pub fn pinned_id(&self, full_name: &str) -> Option<u64> {
 		self.pinned.iter().find(|p| p.full_name == full_name)?.id
 	}
 
-	/// Returns the per-pin submodules override, if any (`None` means inherit the global default).
 	pub fn pinned_submodules(&self, full_name: &str) -> Option<bool> {
 		self.pinned.iter().find(|p| p.full_name == full_name)?.submodules
 	}
 
-	/// Updates a pin's `full_name` in place (used when the owner or repo has been renamed).
-	/// Returns `true` if `old_full_name` was found and renamed.
+	/// Renames a pin after its owner or repo was renamed. Returns `false` if it isn't pinned.
 	pub fn rename_pin(&mut self, old_full_name: &str, new_full_name: &str) -> bool {
 		if let Some(pin) = self.pinned.iter_mut().find(|p| p.full_name == old_full_name) {
 			pin.full_name = new_full_name.to_string();
