@@ -1,6 +1,7 @@
 //! The code forges gitkeep can archive from. GitHub is the default; any other host is a
 //! self-hosted forge whose kind is recorded in the config's `[hosts]` table.
 
+mod forgejo;
 mod github;
 mod gitlab;
 mod http;
@@ -12,19 +13,21 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use self::http::Http;
-pub use self::{github::GitHub, gitlab::GitLab};
+pub use self::{forgejo::Forgejo, github::GitHub, gitlab::GitLab};
 
 /// The kind of software a self-hosted forge runs, which decides the API gitkeep speaks to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ForgeKind {
 	GitLab,
+	Forgejo,
 }
 
 impl ForgeKind {
 	pub const fn name(self) -> &'static str {
 		match self {
 			Self::GitLab => "GitLab",
+			Self::Forgejo => "Forgejo",
 		}
 	}
 }
@@ -34,6 +37,7 @@ impl ForgeKind {
 pub enum Forge {
 	GitHub(GitHub),
 	GitLab(GitLab),
+	Forgejo(Forgejo),
 }
 
 /// What an `add` target turned out to be.
@@ -78,6 +82,7 @@ impl Forge {
 		match self {
 			Self::GitHub(f) => f.resolve(path).await,
 			Self::GitLab(f) => f.resolve(path).await,
+			Self::Forgejo(f) => f.resolve(path).await,
 		}
 	}
 
@@ -86,6 +91,7 @@ impl Forge {
 		match self {
 			Self::GitHub(f) => f.account(name, id).await,
 			Self::GitLab(f) => f.account(name).await,
+			Self::Forgejo(f) => f.account(name).await,
 		}
 	}
 
@@ -94,6 +100,7 @@ impl Forge {
 		match self {
 			Self::GitHub(f) => f.repo(path, id).await,
 			Self::GitLab(f) => f.repo(path).await,
+			Self::Forgejo(f) => f.repo(path, id).await,
 		}
 	}
 }
@@ -104,7 +111,10 @@ pub async fn detect(host: &str) -> Result<ForgeKind> {
 	if GitLab::detect(&http).await? {
 		return Ok(ForgeKind::GitLab);
 	}
-	bail!("Couldn't recognize {host} as a supported forge (GitLab).")
+	if Forgejo::detect(&http).await {
+		return Ok(ForgeKind::Forgejo);
+	}
+	bail!("Couldn't recognize {host} as a supported forge (GitLab or Forgejo).")
 }
 
 /// A target given on the command line: the forge host it lives on (`None` for GitHub) and its path

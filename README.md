@@ -1,6 +1,6 @@
 # gitkeep
 
-A CLI tool for maintaining local archives of GitHub and GitLab users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
+A CLI tool for maintaining local archives of users and organizations on GitHub, GitLab, Forgejo, and Gitea. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
 
 ## Download
 
@@ -52,7 +52,7 @@ Authenticate with a GitHub personal access token. Opens the token creation page 
 ### `add <TARGET>...`
 Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again. Several repos from one owner can be listed as `user/a,b,c`.
 
-Repos on other forges are given as URLs (or as `host/path`): `gitkeep add https://gitlab.example.com/some-group` tracks a group (including subgroups), while `gitkeep add https://gitlab.example.com/some-group/project` adds just that one project. GitLab is currently supported. The first time you add something from a host, gitkeep detects which forge it runs and records it in the config. These archives are stored under `<host>/<namespace>/<project>`, and everywhere such a repo is referenced (`remove`, `sync`, `list`) uses the same `host/namespace/project` format, or the full URL. Public repos work without authentication; for private ones, add a personal access token for that host to the config:
+Repos on other forges are given as URLs (or as `host/path`): `gitkeep add https://gitlab.example.com/some-group` tracks a GitLab group (including subgroups), `gitkeep add https://codeberg.org/some-user` tracks a Forgejo user or org, and a URL to a single project adds just that one. GitLab and Forgejo (such as Codeberg) are supported, as is Gitea, which shares Forgejo's API. The first time you add something from a host, gitkeep detects which forge it runs and records it in the config. These archives are stored under `<host>/<namespace>/<project>`, and everywhere such a repo is referenced (`remove`, `sync`, `list`) uses the same `host/namespace/project` format, or the full URL. Public repos work without authentication; for private ones, add a personal access token for that host to the config (`kind` is `gitlab` or `forgejo`):
 
 ```toml
 [hosts."gitlab.example.com"]

@@ -17,7 +17,7 @@ pub use self::{
 	account::{HostConfig, PinnedRepo, TrackedAccount},
 	state::State,
 };
-use crate::forge::{Forge, ForgeKind, GitHub, GitLab, split_host};
+use crate::forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, split_host};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -124,6 +124,7 @@ impl Config {
 		};
 		match entry.kind {
 			ForgeKind::GitLab => Ok(Forge::GitLab(GitLab::new(host, entry.token.as_deref())?)),
+			ForgeKind::Forgejo => Ok(Forge::Forgejo(Forgejo::new(host, entry.token.as_deref())?)),
 		}
 	}
 
