@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Error, Result, bail};
 use crossterm::{
 	event::{self, Event, KeyCode, KeyEventKind},
 	style::Stylize,
@@ -54,7 +54,7 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 				}
 			}
 			Ok(_) => {}
-			Err(e) => break Err(anyhow::Error::from(e)),
+			Err(e) => break Err(Error::from(e)),
 		}
 	};
 	disable_raw_mode().ok();

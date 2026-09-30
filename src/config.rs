@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use dirs::home_dir;
 use octocrab::{Octocrab, OctocrabBuilder};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use toml::{from_str, to_string_pretty};
 
 use crate::forge::{Forge, ForgeKind, GitHub, GitLab, split_host};
@@ -120,7 +120,7 @@ pub struct PinnedRepo {
 impl<'de> Deserialize<'de> for PinnedRepo {
 	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
 	where
-		D: serde::Deserializer<'de>,
+		D: Deserializer<'de>,
 	{
 		#[derive(Deserialize)]
 		#[serde(untagged)]
@@ -434,6 +434,8 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+	use toml::{Value, to_string};
+
 	use super::*;
 
 	#[test]
@@ -507,7 +509,7 @@ mod tests {
 	#[test]
 	fn state_mark_synced_stores_pushed_at() {
 		let mut state = State::default();
-		let t = chrono::Utc::now();
+		let t = Utc::now();
 		state.mark_synced("user/repo", Some(t), 1);
 		let stored = state.repos["user/repo"].pushed_at;
 		assert!(stored.is_some());
@@ -584,22 +586,22 @@ mod tests {
 
 	#[test]
 	fn pinned_repo_deserializes_legacy_bare_string() {
-		let repo: PinnedRepo = toml::Value::String("alice/repo".to_string()).try_into().unwrap();
+		let repo: PinnedRepo = Value::String("alice/repo".to_string()).try_into().unwrap();
 		assert_eq!(repo.full_name, "alice/repo");
 		assert_eq!(repo.id, None);
 	}
 
 	#[test]
 	fn tracked_user_submodules_defaults_to_none_for_legacy_toml() {
-		let user: TrackedUser = toml::from_str(r#"name = "alice""#).unwrap();
+		let user: TrackedUser = from_str(r#"name = "alice""#).unwrap();
 		assert_eq!(user.submodules, None);
 	}
 
 	#[test]
 	fn tracked_user_submodules_round_trips() {
 		let user = TrackedUser { submodules: Some(true), ..TrackedUser::with_options("alice", false, false) };
-		let raw = toml::to_string(&user).unwrap();
-		let back: TrackedUser = toml::from_str(&raw).unwrap();
+		let raw = to_string(&user).unwrap();
+		let back: TrackedUser = from_str(&raw).unwrap();
 		assert_eq!(back.submodules, Some(true));
 	}
 
@@ -657,7 +659,7 @@ mod tests {
 	#[test]
 	fn config_loads_legacy_pinned_string_array_with_no_submodules_override() {
 		let raw = r#"pinned = ["alice/repo"]"#;
-		let config: Config = toml::from_str(raw).unwrap();
+		let config: Config = from_str(raw).unwrap();
 		assert_eq!(config.pinned_submodules("alice/repo"), None);
 	}
 
@@ -668,20 +670,20 @@ mod tests {
 			full_name = "alice/repo"
 			submodules = true
 		"#;
-		let config: Config = toml::from_str(raw).unwrap();
+		let config: Config = from_str(raw).unwrap();
 		assert_eq!(config.pinned_submodules("alice/repo"), Some(true));
 	}
 
 	#[test]
 	fn config_submodules_defaults_to_false_for_legacy_toml() {
-		let config: Config = toml::from_str(r#"archive_dir = "/tmp/x""#).unwrap();
+		let config: Config = from_str(r#"archive_dir = "/tmp/x""#).unwrap();
 		assert!(!config.submodules);
 	}
 
 	#[test]
 	fn config_loads_legacy_pinned_string_array() {
 		let raw = r#"pinned = ["alice/repo", "bob/other"]"#;
-		let config: Config = toml::from_str(raw).expect("legacy pinned string array should still deserialize");
+		let config: Config = from_str(raw).expect("legacy pinned string array should still deserialize");
 		assert!(config.is_pinned("alice/repo"));
 		assert!(config.is_pinned("bob/other"));
 		assert_eq!(config.pinned_id("alice/repo"), None);
@@ -694,7 +696,7 @@ mod tests {
 			full_name = "alice/repo"
 			id = 42
 		"#;
-		let config: Config = toml::from_str(raw).expect("new pinned table array should deserialize");
+		let config: Config = from_str(raw).expect("new pinned table array should deserialize");
 		assert!(config.is_pinned("alice/repo"));
 		assert_eq!(config.pinned_id("alice/repo"), Some(42));
 	}
@@ -731,22 +733,22 @@ mod tests {
 
 	#[test]
 	fn tracked_user_id_defaults_to_none_when_deserializing_legacy_toml() {
-		let user: TrackedUser = toml::from_str(r#"name = "alice""#).unwrap();
+		let user: TrackedUser = from_str(r#"name = "alice""#).unwrap();
 		assert_eq!(user.id, None);
 	}
 
 	#[test]
 	fn tracked_user_id_round_trips() {
 		let user = TrackedUser { id: Some(42), ..TrackedUser::with_options("alice", false, false) };
-		let raw = toml::to_string(&user).unwrap();
-		let back: TrackedUser = toml::from_str(&raw).unwrap();
+		let raw = to_string(&user).unwrap();
+		let back: TrackedUser = from_str(&raw).unwrap();
 		assert_eq!(back.id, Some(42));
 	}
 
 	#[test]
 	fn tracked_user_id_omitted_from_toml_when_none() {
 		let user = TrackedUser::with_options("alice", false, false);
-		let raw = toml::to_string(&user).unwrap();
+		let raw = to_string(&user).unwrap();
 		assert!(!raw.contains("id"), "got: {raw}");
 	}
 
@@ -783,7 +785,7 @@ mod tests {
 
 	#[test]
 	fn tracked_user_host_defaults_to_none_for_legacy_toml() {
-		let user: TrackedUser = toml::from_str(r#"name = "alice""#).unwrap();
+		let user: TrackedUser = from_str(r#"name = "alice""#).unwrap();
 		assert_eq!(user.host, None);
 	}
 
@@ -793,8 +795,8 @@ mod tests {
 			host: Some("gitlab.example.com".to_string()),
 			..TrackedUser::with_options("grp", false, false)
 		};
-		let raw = toml::to_string(&user).unwrap();
-		let back: TrackedUser = toml::from_str(&raw).unwrap();
+		let raw = to_string(&user).unwrap();
+		let back: TrackedUser = from_str(&raw).unwrap();
 		assert_eq!(back.host.as_deref(), Some("gitlab.example.com"));
 	}
 
@@ -802,7 +804,7 @@ mod tests {
 	fn config_without_gitlab_omits_new_fields_on_save() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		let raw = toml::to_string(&config).unwrap();
+		let raw = to_string(&config).unwrap();
 		assert!(!raw.contains("gitlab_tokens"), "got: {raw}");
 		assert!(!raw.contains("host"), "got: {raw}");
 	}

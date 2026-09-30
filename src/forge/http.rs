@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
-use octocrab::{Octocrab, OctocrabBuilder};
+use octocrab::{Error as OctocrabError, Octocrab, OctocrabBuilder};
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Value, from_str};
 
 /// A small JSON-over-HTTPS client for a self-hosted forge's REST API. It reuses octocrab's
 /// transport (so no extra HTTP dependency is needed) but reads raw responses, so errors report
@@ -42,7 +42,7 @@ impl Http {
 	pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
 		let (status, body) = self.fetch(path).await?;
 		match status {
-			200..=299 => serde_json::from_str(&body)
+			200..=299 => from_str(&body)
 				.map(Some)
 				.with_context(|| format!("{} returned an unexpected response for {path}", self.host)),
 			404 => Ok(None),
@@ -65,16 +65,16 @@ impl Http {
 /// Pulls a readable message out of an error response: the JSON `message` or `error` field most
 /// forges send, or the status code alone.
 fn error_message(status: u16, body: &str) -> String {
-	serde_json::from_str::<Value>(body)
+	from_str::<Value>(body)
 		.ok()
 		.and_then(|v| ["message", "error"].iter().find_map(|k| v.get(k).and_then(Value::as_str).map(str::to_string)))
 		.unwrap_or_else(|| format!("HTTP {status}"))
 }
 
 /// octocrab displays some transport errors as just "GitHub"; prefer the underlying message.
-fn describe(e: &octocrab::Error) -> String {
+fn describe(e: &OctocrabError) -> String {
 	match e {
-		octocrab::Error::GitHub { source, .. } => source.message.clone(),
+		OctocrabError::GitHub { source, .. } => source.message.clone(),
 		other => other.to_string(),
 	}
 }

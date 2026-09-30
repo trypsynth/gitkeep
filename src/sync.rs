@@ -8,7 +8,8 @@ use std::{
 	string::ToString,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Error, Result, bail};
+use chrono::{DateTime, Utc};
 
 use crate::{
 	config::{Config, State, TrackedUser},
@@ -61,7 +62,7 @@ struct SyncState<'a> {
 struct RepoInfo<'a> {
 	full_name: &'a str,
 	id: u64,
-	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
+	pushed_at: Option<DateTime<Utc>>,
 }
 
 pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
@@ -511,10 +512,7 @@ fn clone_and_record(
 	}
 }
 
-fn should_skip_pull(
-	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
-	state_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> bool {
+fn should_skip_pull(repo_pushed_at: Option<DateTime<Utc>>, state_pushed_at: Option<DateTime<Utc>>) -> bool {
 	match (repo_pushed_at, state_pushed_at) {
 		(Some(repo), Some(state)) => repo <= state,
 		_ => false,
@@ -536,7 +534,7 @@ enum PullOutcome {
 	Updated,
 	UpToDate,
 	Fatal,
-	Failed(anyhow::Error),
+	Failed(Error),
 }
 
 fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
@@ -545,7 +543,7 @@ fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 		Ok(out) => out,
 		Err(e) => {
 			return PullOutcome::Failed(
-				anyhow::Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
+				Error::from(e).context("Could not run 'git pull'. Is git installed and on your PATH?"),
 			);
 		}
 	};
@@ -608,7 +606,7 @@ fn update_submodules(repo_dir: &Path, verbosity: Verbosity) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-	use chrono::{Duration, Utc};
+	use chrono::Duration;
 
 	use super::*;
 
