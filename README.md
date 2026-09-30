@@ -52,11 +52,12 @@ Authenticate with a GitHub personal access token. Opens the token creation page 
 ### `add <TARGET>...`
 Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again. Several repos from one owner can be listed as `user/a,b,c`.
 
-GitLab targets are given as URLs: `gitkeep add https://gitlab.example.com/some-group` tracks a group (including subgroups), while `gitkeep add https://gitlab.example.com/some-group/project` adds just that one project. GitLab archives are stored under `<host>/<namespace>/<project>`, and everywhere a GitLab repo is referenced (`remove`, `sync`, `list`) uses the same `host/namespace/project` format, or the full URL. Public instances work without authentication; for private repos, add a personal access token to the config by hand:
+Repos on other forges are given as URLs (or as `host/path`): `gitkeep add https://gitlab.example.com/some-group` tracks a group (including subgroups), while `gitkeep add https://gitlab.example.com/some-group/project` adds just that one project. GitLab is currently supported. The first time you add something from a host, gitkeep detects which forge it runs and records it in the config. These archives are stored under `<host>/<namespace>/<project>`, and everywhere such a repo is referenced (`remove`, `sync`, `list`) uses the same `host/namespace/project` format, or the full URL. Public repos work without authentication; for private ones, add a personal access token for that host to the config:
 
 ```toml
-[gitlab_tokens]
-"gitlab.example.com" = "glpat-..."
+[hosts."gitlab.example.com"]
+kind = "gitlab"
+token = "glpat-..."
 ```
 
 | Flag | Description |

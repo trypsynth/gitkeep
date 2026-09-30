@@ -687,6 +687,7 @@ dependencies = [
  "octocrab",
  "open",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
 ]

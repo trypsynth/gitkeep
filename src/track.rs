@@ -1,149 +1,90 @@
 use std::{
+	collections::{HashMap, hash_map::Entry},
 	fmt::Write as _,
 	fs,
 	path::{Path, PathBuf},
 };
 
-use anyhow::{Result, bail};
-use octocrab::Octocrab;
+use anyhow::Result;
 
 use crate::{
-	config::{Config, PinnedRepo, TrackedUser},
-	gitlab,
+	config::{Config, HostConfig, PinnedRepo, TrackedUser},
+	forge::{self, Forge, Resolved, Target, archive_path},
 	utils::{confirm, plural},
 };
 
-/// What `add_gitlab` ended up adding, so the caller can decide what to sync.
-pub enum GitLabAddition {
-	/// A tracked namespace, as a host-qualified name (`host/path`).
-	Namespace(String),
-	/// A pinned project, as a host-qualified full name (`host/namespace/project`).
-	Project(String),
-	/// Nothing new (already tracked or pinned).
-	None,
-}
-
-/// Resolves a GitLab URL target to a group/user namespace (tracked) or a single project
-/// (pinned) and records it in the config.
-pub async fn add_gitlab(
-	host: &str,
-	path: &str,
-	forks: bool,
-	frozen: bool,
-	submodules: Option<bool>,
-) -> Result<GitLabAddition> {
-	let mut config = Config::load()?;
-	let client = gitlab::GitLabClient::new(host, config.gitlab_token(host))?;
-	match client.resolve_target(path).await? {
-		gitlab::Target::Namespace(full_path) => {
-			let display = format!("{host}/{full_path}");
-			let mut changed = config.add_user_on(Some(host), &full_path, forks, frozen, submodules);
-			let tracked =
-				TrackedUser { host: Some(host.to_string()), ..TrackedUser::with_options(&full_path, forks, frozen) };
-			// Auto-remove any individually-pinned projects now covered by the namespace.
-			for pin in config.remove_pins_covered(&tracked) {
-				println!("{pin} removed (now covered by {display}).");
-				changed = true;
-			}
-			if changed {
-				config.save()?;
-			}
-			Ok(GitLabAddition::Namespace(display))
-		}
-		gitlab::Target::Project(project) => {
-			let full_name = format!("{host}/{}", project.path_with_namespace);
-			if let Some(owner) = config.track.iter().find(|u| u.covers(&full_name)).map(TrackedUser::display_name) {
-				if let Some(restored) = config.include_repo(&full_name) {
-					println!("Now tracking {restored} again.");
-					config.save()?;
-					return Ok(GitLabAddition::Namespace(owner));
-				}
-				println!("{owner} is already fully tracked; {full_name} will be synced automatically.");
-				return Ok(GitLabAddition::None);
-			}
-			if config.is_pinned(&full_name) {
-				println!("Already tracking {full_name}.");
-				return Ok(GitLabAddition::None);
-			}
-			// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
-			config.include_repo(&full_name);
-			config.pin_repo_with_options(&full_name, Some(project.id), submodules);
-			println!("Now tracking {full_name}.");
-			config.save()?;
-			Ok(GitLabAddition::Project(full_name))
-		}
-	}
-}
-
-pub fn add(users: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<()> {
-	let mut config = Config::load()?;
-	let mut changed = false;
-	for user in users {
-		if config.add_user(user, forks, frozen, submodules) {
-			changed = true;
-		}
-		// Auto-remove any individually-pinned repos from this user — they're now covered.
-		for pin in config.remove_pins_for_user(user) {
-			println!("{pin} removed (now covered by {user}).");
-			changed = true;
-		}
-	}
-	if changed {
-		config.save()?;
-	}
-	Ok(())
-}
-
-/// Result of `add_pinned`: repos that should be synced right away.
+/// What `add` recorded, by key, so the caller can sync it right away.
 #[derive(Default)]
-pub struct AddedRepos {
-	/// Canonical names of newly pinned repos.
+pub struct Added {
+	/// Accounts that are now tracked.
+	pub accounts: Vec<String>,
+	/// Repos that are now individually pinned.
 	pub pinned: Vec<String>,
-	/// Owners of previously removed repos that were added back under a fully tracked account.
+	/// Tracked accounts that had a previously removed repo added back.
 	pub restored_owners: Vec<String>,
 }
 
-/// Validates and pins individual repos (`user/repo` format). A repo under a fully tracked account
-/// that was previously removed is added back instead.
-pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<bool>) -> Result<AddedRepos> {
+/// Adds accounts and repos from any forge. Each target is a GitHub name (`owner` or
+/// `owner/repo`), a host-qualified name (`host/path`), or a URL. The first time a host is seen, its
+/// forge kind is detected and recorded.
+pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<Added> {
 	let mut config = Config::load()?;
-	let mut added = AddedRepos::default();
 	let mut changed = false;
-	for repo_str in repos {
-		let (user, name) = parse_repo_arg(repo_str)?;
-		if let Some(tracked) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map(|u| u.name.clone()) {
-			if let Some(restored) = config.include_repo(repo_str) {
+	let mut forges: HashMap<Option<String>, Forge> = HashMap::new();
+	let mut resolved = Vec::with_capacity(targets.len());
+	for arg in targets {
+		let target = Target::parse(arg);
+		if let Some(host) = &target.host
+			&& !config.hosts.contains_key(host)
+		{
+			let kind = forge::detect(host).await?;
+			println!("Detected {host} as {}.", kind.name());
+			config.hosts.insert(host.clone(), HostConfig { kind, token: None });
+			changed = true;
+		}
+		let forge = match forges.entry(target.host.clone()) {
+			Entry::Occupied(e) => e.into_mut(),
+			Entry::Vacant(e) => e.insert(config.forge(target.host.as_deref())?),
+		};
+		resolved.push((target.host, forge.resolve(&target.path).await?));
+	}
+	let mut added = Added::default();
+	// Record accounts before repos, so `gitkeep add rust-lang rust-lang/mdBook` tracks the org and
+	// skips the now-redundant pin.
+	for (host, item) in &resolved {
+		if let Resolved::Account(name) = item {
+			changed |= config.add_user_on(host.as_deref(), name, forks, frozen, submodules);
+			let tracked = TrackedUser { host: host.clone(), ..TrackedUser::with_options(name, forks, frozen) };
+			for pin in config.remove_pins_covered(&tracked) {
+				println!("{pin} removed (now covered by {}).", tracked.display_name());
+				changed = true;
+			}
+			added.accounts.push(tracked.display_name());
+		}
+	}
+	for (_, item) in resolved {
+		let Resolved::Repo(repo) = item else { continue };
+		let key = repo.full_name;
+		if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).map(TrackedUser::display_name) {
+			if let Some(restored) = config.include_repo(&key) {
 				println!("Now tracking {restored} again.");
 				changed = true;
-				if !added.restored_owners.contains(&tracked) {
-					added.restored_owners.push(tracked);
+				if !added.restored_owners.contains(&owner) {
+					added.restored_owners.push(owner);
 				}
 			} else {
-				println!("{tracked} is already fully tracked; {name} will be synced automatically.");
+				println!("{owner} is already fully tracked; {key} will be synced automatically.");
 			}
-			continue;
+		} else if config.is_pinned(&key) {
+			println!("Already tracking {key}.");
+		} else {
+			// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
+			config.include_repo(&key);
+			config.pin_repo_with_options(&key, Some(repo.id), submodules);
+			println!("Now tracking {key}.");
+			added.pinned.push(key);
+			changed = true;
 		}
-		// Case-insensitive duplicate-pin check (before hitting the API).
-		if let Some(existing) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
-			println!("Already tracking {}.", existing.full_name);
-			continue;
-		}
-		// Verify the repo exists on GitHub and get canonical casing.
-		let (full_name, id) = match client.repos(user, name).get().await {
-			Ok(r) => (r.full_name.unwrap_or_else(|| repo_str.clone()), r.id.into_inner()),
-			Err(_) => bail!("'{repo_str}' does not exist on GitHub."),
-		};
-		// Re-check with canonical name in case casing differed.
-		if config.is_pinned(&full_name) {
-			println!("Already tracking {full_name}.");
-			continue;
-		}
-		// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
-		config.include_repo(&full_name);
-		config.pin_repo_with_options(&full_name, Some(id), submodules);
-		println!("Now tracking {full_name}.");
-		added.pinned.push(full_name);
-		changed = true;
 	}
 	if changed {
 		config.save()?;
@@ -151,102 +92,13 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 	Ok(added)
 }
 
-fn parse_repo_arg(s: &str) -> Result<(&str, &str)> {
-	match s.split_once('/') {
-		Some((user, name)) if !user.is_empty() && !name.is_empty() && !name.contains('/') => Ok((user, name)),
-		_ => bail!("'{s}' is not in user/repo format"),
-	}
-}
-
-pub async fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
+/// Stops tracking accounts or repos on any forge, offering to delete their local copies.
+pub async fn remove(targets: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	let mut config = Config::load()?;
-	let mut changed = false;
 	let archive_root = config.archive_dir()?;
-	for target in users {
-		// Accept both URL form and the host-qualified form shown by `gitkeep list`.
-		let target = &gitlab::parse_remote_url(target).map_or_else(|| target.clone(), |(h, p)| format!("{h}/{p}"));
-		if let Some((host, path)) = gitlab::split_host(target) {
-			if remove_gitlab(&mut config, &archive_root, host, path, target, delete_dir, yes).await? {
-				changed = true;
-			}
-			continue;
-		}
-		if target.contains('/') {
-			if remove_repo(&mut config, &archive_root, target, delete_dir, yes).await? {
-				changed = true;
-			}
-		} else if let Some(canonical) =
-			config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone())
-		{
-			if config.remove_user(target) {
-				changed = true;
-				config.remove_exclusions_for_user(&canonical);
-				let user_dir = archive_root.join(&canonical);
-				if user_dir.exists() {
-					let should_delete = if delete_dir || yes {
-						true
-					} else {
-						confirm(&format!("Delete local archive for {target}?"), false)?
-					};
-					if should_delete {
-						println!("Deleting {}...", user_dir.display());
-						fs::remove_dir_all(&user_dir)?;
-					}
-				}
-			}
-		} else {
-			// Not a tracked user — but individually-pinned repos under this user may exist.
-			let matching = config.pinned_repos_for_user(target);
-			if matching.is_empty() {
-				if let Some(dir) = find_dir_ignoring_case(&archive_root, target)? {
-					println!("'{target}' is not tracked, but a local archive exists at {}.", dir.display());
-					let should_delete = if delete_dir || yes { true } else { confirm("Delete it?", false)? };
-					if should_delete {
-						println!("Deleting {}...", dir.display());
-						fs::remove_dir_all(&dir)?;
-					}
-				} else {
-					println!("Not tracking '{target}'.");
-				}
-				continue;
-			}
-			println!(
-				"'{target}' is not tracked, but you have {} individually tracked under it:",
-				plural(matching.len(), "repo", "repos")
-			);
-			for repo in &matching {
-				println!("  {repo}");
-			}
-			if !yes && !confirm("Remove these repos too?", false)? {
-				continue;
-			}
-			let mut canonical_user = None;
-			for repo in config.remove_pins_for_user(target) {
-				println!("No longer tracking {repo}.");
-				changed = true;
-				let Some((user, name)) = repo.split_once('/') else { continue };
-				canonical_user.get_or_insert_with(|| user.to_string());
-				let repo_dir = archive_root.join(user).join(name);
-				if repo_dir.exists() {
-					let should_delete = if delete_dir || yes {
-						true
-					} else {
-						confirm(&format!("Delete local archive for {repo}?"), false)?
-					};
-					if should_delete {
-						println!("Deleting {}...", repo_dir.display());
-						fs::remove_dir_all(&repo_dir)?;
-					}
-				}
-			}
-			// Clean up the now-possibly-empty top-level user directory.
-			if let Some(user) = canonical_user {
-				let user_dir = archive_root.join(user);
-				if user_dir.is_dir() {
-					let _ = fs::remove_dir(&user_dir);
-				}
-			}
-		}
+	let mut changed = false;
+	for arg in targets {
+		changed |= remove_one(&mut config, &archive_root, &Target::parse(arg), delete_dir, yes).await?;
 	}
 	if changed {
 		config.save()?;
@@ -254,82 +106,103 @@ pub async fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()>
 	Ok(())
 }
 
-/// Removes a host-qualified GitLab target: a tracked namespace if one matches, otherwise
-/// a pinned project. Returns whether the config changed.
-async fn remove_gitlab(
+/// Removes one target: a tracked account, a pinned repo, or a single repo under a tracked account
+/// (which is excluded from syncs). Returns `true` if the config changed.
+async fn remove_one(
 	config: &mut Config,
 	archive_root: &Path,
-	host: &str,
-	path: &str,
-	target: &str,
+	target: &Target,
 	delete_dir: bool,
 	yes: bool,
 ) -> Result<bool> {
-	let tracked =
-		config.track.iter().find(|u| u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)).cloned();
-	if let Some(tracked) = tracked {
-		let canonical = &tracked.name;
-		config.track.retain(|u| !(u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)));
-		config.remove_exclusions_covered(&tracked);
-		println!("Stopped tracking {host}/{canonical}.");
-		let mut dir = archive_root.join(host);
-		dir.extend(canonical.split('/'));
-		if dir.exists() {
-			let should_delete =
-				if delete_dir || yes { true } else { confirm(&format!("Delete local archive for {target}?"), false)? };
-			if should_delete {
-				println!("Deleting {}...", dir.display());
-				fs::remove_dir_all(&dir)?;
-			}
+	let key = target.key();
+	let host = target.host.as_deref();
+	let account = config.track.iter().find(|u| u.host.as_deref() == host && u.name.eq_ignore_ascii_case(&target.path));
+	if let Some(account) = account.cloned() {
+		config.remove_user(host, &account.name);
+		config.remove_exclusions_covered(&account);
+		let name = account.display_name();
+		let dir = archive_path(archive_root, &name);
+		if dir.exists() && (delete_dir || yes || confirm(&format!("Delete local archive for {name}?"), false)?) {
+			println!("Deleting {}...", dir.display());
+			fs::remove_dir_all(&dir)?;
 		}
 		return Ok(true);
 	}
-	if config.unpin_repo(target) {
-		println!("No longer tracking {target}.");
-		if delete_dir {
-			let mut dir = archive_root.to_path_buf();
-			dir.extend(target.split('/'));
-			if dir.exists() {
-				println!("Deleting {}...", dir.display());
-				fs::remove_dir_all(&dir)?;
-			}
+	if let Some(pin) = config.unpin_repo(&key) {
+		println!("No longer tracking {pin}.");
+		let dir = archive_path(archive_root, &pin);
+		if delete_dir && dir.exists() {
+			println!("Deleting {}...", dir.display());
+			fs::remove_dir_all(&dir)?;
 		}
 		return Ok(true);
 	}
-	if config.track.iter().any(|u| u.covers(target)) {
-		return exclude_gitlab_project(config, archive_root, host, path, target, delete_dir || yes).await;
+	if target.path.contains('/')
+		&& let Some(owner) = config.track.iter().find(|u| u.covers(&key)).cloned()
+	{
+		return exclude_repo(config, archive_root, &owner, target, delete_dir || yes).await;
 	}
-	println!("Not tracking '{target}'.");
-	Ok(false)
+	remove_untracked(config, archive_root, &key, target, delete_dir, yes)
 }
 
-/// Handles `gitkeep remove user/repo`: unpins an individually tracked repo, or excludes a repo
-/// under a fully tracked account. Returns `true` if the config changed.
-async fn remove_repo(
+/// Splits a key into the archive directory that holds it and its last path segment.
+fn parent_and_name<'a>(archive_root: &Path, key: &'a str) -> (PathBuf, &'a str) {
+	key.rsplit_once('/')
+		.map_or_else(|| (archive_root.to_path_buf(), key), |(parent, name)| (archive_path(archive_root, parent), name))
+}
+
+/// Handles a target that isn't tracked itself: it may still have individually pinned repos under
+/// it, or a leftover local archive from before it was removed.
+fn remove_untracked(
 	config: &mut Config,
 	archive_root: &Path,
-	target: &str,
+	key: &str,
+	target: &Target,
 	delete_dir: bool,
 	yes: bool,
 ) -> Result<bool> {
-	if config.unpin_repo(target) {
-		println!("No longer tracking {target}.");
-		if delete_dir {
-			let (user, name) = parse_repo_arg(target)?;
-			let repo_dir = archive_root.join(user).join(name);
-			if repo_dir.exists() {
-				println!("Deleting {}...", repo_dir.display());
-				fs::remove_dir_all(&repo_dir)?;
+	let as_account = TrackedUser { host: target.host.clone(), ..TrackedUser::with_options(&target.path, false, false) };
+	let mut matching: Vec<String> =
+		config.pinned.iter().filter(|p| as_account.covers(&p.full_name)).map(|p| p.full_name.clone()).collect();
+	matching.sort();
+	let (parent, name) = parent_and_name(archive_root, key);
+	if matching.is_empty() {
+		match find_dir_ignoring_case(&parent, name)? {
+			Some(dir) => {
+				println!("'{key}' is not tracked, but a local archive exists at {}.", dir.display());
+				if delete_dir || yes || confirm("Delete it?", false)? {
+					println!("Deleting {}...", dir.display());
+					fs::remove_dir_all(&dir)?;
+				}
 			}
+			None => println!("Not tracking '{key}'."),
 		}
-		return Ok(true);
-	}
-	let (user, _) = parse_repo_arg(target)?;
-	let Some(owner) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map(|u| u.name.clone()) else {
-		println!("Not tracking '{target}'.");
 		return Ok(false);
-	};
-	exclude_repo(config, archive_root, &owner, target, delete_dir || yes).await
+	}
+	println!(
+		"'{key}' is not tracked, but you have {} individually tracked under it:",
+		plural(matching.len(), "repo", "repos")
+	);
+	for repo in &matching {
+		println!("  {repo}");
+	}
+	if !yes && !confirm("Remove these repos too?", false)? {
+		return Ok(false);
+	}
+	for repo in config.remove_pins_covered(&as_account) {
+		println!("No longer tracking {repo}.");
+		let repo_dir = archive_path(archive_root, &repo);
+		if repo_dir.exists() && (delete_dir || yes || confirm(&format!("Delete local archive for {repo}?"), false)?) {
+			println!("Deleting {}...", repo_dir.display());
+			fs::remove_dir_all(&repo_dir)?;
+		}
+	}
+	// Clean up the owner's directory if that left it empty.
+	if let Some(dir) = find_dir_ignoring_case(&parent, name)? {
+		let _ = fs::remove_dir(&dir);
+	}
+	Ok(true)
 }
 
 /// Removes a single repo under the fully tracked account `owner` by excluding it from syncs, then
@@ -337,23 +210,34 @@ async fn remove_repo(
 async fn exclude_repo(
 	config: &mut Config,
 	archive_root: &Path,
-	owner: &str,
-	target: &str,
+	owner: &TrackedUser,
+	target: &Target,
 	delete: bool,
 ) -> Result<bool> {
-	let (_, name) = parse_repo_arg(target)?;
-	let local_dir = find_dir_ignoring_case(&archive_root.join(owner), name)?;
-	// Prefer names we already know over a GitHub lookup, so repos deleted upstream can still be removed.
+	let key = target.key();
+	let Some((parent, name)) = key.rsplit_once('/') else { return Ok(false) };
+	// Use the account's canonical casing for the owner part when the repo sits directly under it.
+	let owner_key = owner.display_name();
+	let parent = if parent.eq_ignore_ascii_case(&owner_key) { owner_key } else { parent.to_string() };
+	let local_dir = find_dir_ignoring_case(&archive_path(archive_root, &parent), name)?;
+	// Prefer names we already know over a forge lookup, so repos deleted upstream can still be removed.
 	let full_name = if let Some(dir) = &local_dir {
-		format!("{owner}/{}", dir.file_name().map_or_else(|| name.into(), |n| n.to_string_lossy()))
-	} else if let Some(existing) = config.excluded.iter().find(|r| r.eq_ignore_ascii_case(target)) {
+		format!("{parent}/{}", dir.file_name().map_or_else(|| name.into(), |n| n.to_string_lossy()))
+	} else if let Some(existing) = config.excluded.iter().find(|r| r.eq_ignore_ascii_case(&key)) {
 		existing.clone()
 	} else {
-		let Ok(repo) = config.build_client()?.repos(owner, name).get().await else {
-			println!("'{target}' does not exist on GitHub.");
-			return Ok(false);
-		};
-		repo.full_name.unwrap_or_else(|| format!("{owner}/{name}"))
+		let forge_name = target.host.as_deref().unwrap_or("GitHub");
+		match config.forge(target.host.as_deref())?.repo(&target.path, None).await {
+			Ok(Some(repo)) => repo.full_name,
+			Ok(None) => {
+				println!("'{key}' does not exist on {forge_name}.");
+				return Ok(false);
+			}
+			Err(e) => {
+				println!("Could not remove '{key}': {e:#}.");
+				return Ok(false);
+			}
+		}
 	};
 	apply_exclusion(config, &full_name, local_dir, delete)
 }
@@ -374,37 +258,6 @@ fn apply_exclusion(config: &mut Config, full_name: &str, local_dir: Option<PathB
 		fs::remove_dir_all(&dir)?;
 	}
 	Ok(changed)
-}
-
-/// GitLab counterpart of `exclude_repo`: removes one project (`host/namespace/project`) under a
-/// fully tracked GitLab namespace.
-async fn exclude_gitlab_project(
-	config: &mut Config,
-	archive_root: &Path,
-	host: &str,
-	path: &str,
-	target: &str,
-	delete: bool,
-) -> Result<bool> {
-	let mut dir = archive_root.to_path_buf();
-	dir.extend(target.split('/'));
-	let local_dir = dir.is_dir().then_some(dir);
-	// As for GitHub, prefer names we already know so projects deleted upstream can still be removed.
-	let full_name = if local_dir.is_some() {
-		target.to_string()
-	} else if let Some(existing) = config.excluded.iter().find(|r| r.eq_ignore_ascii_case(target)) {
-		existing.clone()
-	} else {
-		let client = gitlab::GitLabClient::new(host, config.gitlab_token(host))?;
-		match client.fetch_project(path).await {
-			Ok(project) => format!("{host}/{}", project.path_with_namespace),
-			Err(e) => {
-				println!("Could not remove '{target}': {e:#}.");
-				return Ok(false);
-			}
-		}
-	};
-	apply_exclusion(config, &full_name, local_dir, delete)
 }
 
 /// Looks for a directory directly under `parent` matching `name` (case-insensitively, since GitHub
@@ -514,73 +367,61 @@ mod tests {
 		dir
 	}
 
-	#[test]
-	fn parse_repo_arg_valid() {
-		assert_eq!(parse_repo_arg("alice/my-repo").unwrap(), ("alice", "my-repo"));
+	fn gitlab_user(name: &str) -> TrackedUser {
+		TrackedUser { host: Some("gitlab.example.com".to_string()), ..TrackedUser::with_options(name, false, false) }
 	}
 
-	#[test]
-	fn parse_repo_arg_rejects_malformed() {
-		for bad in ["noslash", "a/b/c", "/repo", "user/"] {
-			assert!(parse_repo_arg(bad).is_err(), "{bad} should be rejected");
-		}
+	async fn remove(config: &mut Config, root: &Path, target: &str, delete_dir: bool) -> bool {
+		remove_one(config, root, &Target::parse(target), delete_dir, true).await.unwrap()
 	}
 
 	#[tokio::test]
-	async fn exclude_repo_uses_local_casing_and_deletes() {
+	async fn remove_excludes_repo_using_local_casing_and_deletes() {
 		let root = temp_dir();
 		fs::create_dir_all(root.join("Alice").join("BigRepo")).unwrap();
 		let mut config = Config::default();
 		config.add_user("Alice", false, false, None);
-		assert!(exclude_repo(&mut config, &root, "Alice", "alice/bigrepo", true).await.unwrap());
+		assert!(remove(&mut config, &root, "alice/bigrepo", true).await);
 		assert!(config.excluded.contains("Alice/BigRepo"));
+		assert_eq!(config.track.len(), 1, "the account itself stays tracked");
 		assert!(!root.join("Alice").join("BigRepo").exists());
 		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[tokio::test]
-	async fn exclude_repo_already_excluded_is_unchanged() {
+	async fn remove_already_excluded_repo_is_unchanged() {
 		let root = temp_dir();
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
 		config.exclude_repo("alice/big");
-		assert!(!exclude_repo(&mut config, &root, "alice", "alice/big", true).await.unwrap());
+		assert!(!remove(&mut config, &root, "alice/big", true).await);
 		assert_eq!(config.excluded.len(), 1);
 		fs::remove_dir_all(&root).unwrap();
 	}
 
-	fn gitlab_user(name: &str) -> TrackedUser {
-		TrackedUser { host: Some("gitlab.example.com".to_string()), ..TrackedUser::with_options(name, false, false) }
-	}
-
 	#[tokio::test]
-	async fn remove_gitlab_excludes_project_under_tracked_group() {
+	async fn remove_excludes_gitlab_project_under_tracked_group() {
 		let root = temp_dir();
 		let project_dir = root.join("gitlab.example.com").join("grp").join("sub").join("big");
 		fs::create_dir_all(&project_dir).unwrap();
 		let mut config = Config::default();
 		config.track.push(gitlab_user("grp"));
-		let target = "gitlab.example.com/grp/sub/big";
-		let changed =
-			remove_gitlab(&mut config, &root, "gitlab.example.com", "grp/sub/big", target, true, true).await.unwrap();
-		assert!(changed);
-		assert!(config.is_excluded(target));
+		assert!(remove(&mut config, &root, "https://gitlab.example.com/grp/sub/big", true).await);
+		assert!(config.is_excluded("gitlab.example.com/grp/sub/big"));
 		assert_eq!(config.track.len(), 1, "the group itself stays tracked");
 		assert!(!project_dir.exists());
 		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[tokio::test]
-	async fn remove_gitlab_namespace_clears_its_exclusions_only() {
+	async fn remove_gitlab_group_clears_its_exclusions_only() {
 		let root = temp_dir();
 		let mut config = Config::default();
 		config.track.push(gitlab_user("grp"));
 		config.exclude_repo("gitlab.example.com/grp/big");
 		config.exclude_repo("gitlab.example.com/other/big");
 		config.exclude_repo("alice/big");
-		remove_gitlab(&mut config, &root, "gitlab.example.com", "grp", "gitlab.example.com/grp", false, true)
-			.await
-			.unwrap();
+		assert!(remove(&mut config, &root, "gitlab.example.com/grp", false).await);
 		assert!(config.track.is_empty());
 		assert!(!config.is_excluded("gitlab.example.com/grp/big"));
 		assert!(config.is_excluded("gitlab.example.com/other/big"));
@@ -589,22 +430,46 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn remove_repo_ignores_untracked_owner() {
+	async fn remove_github_account_leaves_same_name_on_other_hosts() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		assert!(!remove_repo(&mut config, &root, "bob/repo", true, true).await.unwrap());
+		config.add_user("alice", false, false, None);
+		config.track.push(gitlab_user("alice"));
+		assert!(remove(&mut config, &root, "alice", false).await);
+		assert_eq!(config.track.len(), 1);
+		assert_eq!(config.track[0].host.as_deref(), Some("gitlab.example.com"));
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn remove_ignores_repo_of_untracked_owner() {
+		let root = temp_dir();
+		let mut config = Config::default();
+		assert!(!remove(&mut config, &root, "bob/repo", true).await);
 		assert!(config.excluded.is_empty());
 		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[tokio::test]
-	async fn remove_repo_unpins_pinned_repo_instead_of_excluding() {
+	async fn remove_unpins_pinned_repo_instead_of_excluding() {
 		let root = temp_dir();
 		let mut config = Config::default();
 		config.pin_repo_with_options("bob/repo", None, None);
-		assert!(remove_repo(&mut config, &root, "bob/repo", false, true).await.unwrap());
+		assert!(remove(&mut config, &root, "Bob/Repo", false).await);
 		assert!(!config.is_pinned("bob/repo"));
 		assert!(config.excluded.is_empty());
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn remove_untracked_owner_drops_its_pins() {
+		let root = temp_dir();
+		let mut config = Config::default();
+		config.pin_repo_with_options("gitlab.example.com/grp/a", None, None);
+		config.pin_repo_with_options("gitlab.example.com/other/b", None, None);
+		assert!(remove(&mut config, &root, "gitlab.example.com/grp", false).await);
+		assert!(!config.is_pinned("gitlab.example.com/grp/a"));
+		assert!(config.is_pinned("gitlab.example.com/other/b"));
 		fs::remove_dir_all(&root).unwrap();
 	}
 
@@ -786,7 +651,7 @@ mod tests {
 		config.pin_repo_with_options("alice/bar", None, None);
 		config.pin_repo_with_options("bob/baz", None, None);
 		config.add_user("alice", false, false, None);
-		let pins_removed = config.remove_pins_for_user("alice");
+		let pins_removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
 		assert_eq!(pins_removed.len(), 2);
 		assert!(config.is_pinned("bob/baz"));
 	}

@@ -6,7 +6,7 @@ use crate::{config::Config, utils::confirm};
 
 pub fn run() -> Result<()> {
 	let path = Config::path()?;
-	let existing = Config::load()?;
+	let mut config = Config::load()?;
 	if path.exists() {
 		println!("Config found at {}. Tracked users and your auth token will not be affected.", path.display());
 		if !confirm("Update settings?", false)? {
@@ -14,27 +14,17 @@ pub fn run() -> Result<()> {
 			return Ok(());
 		}
 	}
-	let default_archive = existing.archive_dir.clone().unwrap_or_else(|| {
+	let default_archive = config.archive_dir.clone().unwrap_or_else(|| {
 		home_dir().map_or_else(|| "~/gitkeep".to_string(), |h| h.join("gitkeep").to_string_lossy().into_owned())
 	});
 	let archive_dir = Text::new("Archive directory")
 		.with_default(&default_archive)
 		.prompt()
 		.map(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })?;
-	let use_ssh = confirm("Use SSH clone URLs?", existing.use_ssh)?;
-	let submodules = confirm("Clone submodules by default?", existing.submodules)?;
-	let clone_on_add = confirm("Clone repos immediately after adding them?", !existing.no_sync)?;
-	let config = Config {
-		token: existing.token,
-		gitlab_tokens: existing.gitlab_tokens,
-		archive_dir,
-		use_ssh,
-		submodules,
-		no_sync: !clone_on_add,
-		track: existing.track,
-		excluded: existing.excluded,
-		pinned: existing.pinned,
-	};
+	config.archive_dir = archive_dir;
+	config.use_ssh = confirm("Use SSH clone URLs?", config.use_ssh)?;
+	config.submodules = confirm("Clone submodules by default?", config.submodules)?;
+	config.no_sync = !confirm("Clone repos immediately after adding them?", !config.no_sync)?;
 	config.save()?;
 	println!("Config written to {}.", path.display());
 	if config.token.is_none() {

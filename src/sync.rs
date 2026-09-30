@@ -1,5 +1,5 @@
 use std::{
-	collections::HashSet,
+	collections::{HashMap, HashSet},
 	fmt::Write as _,
 	fs,
 	io::{self, Write as _},
@@ -9,12 +9,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use octocrab::{Octocrab, models::Repository};
-use serde::Deserialize;
 
 use crate::{
 	config::{Config, State, TrackedUser},
-	gitlab,
+	forge::{Forge, RemoteRepo, archive_path, split_host},
 	utils::plural,
 };
 
@@ -48,7 +46,6 @@ struct Totals {
 /// Read-only settings shared by every repo synced during a single run.
 #[derive(Clone, Copy)]
 struct SyncContext<'a> {
-	client: &'a Octocrab,
 	archive_dir: &'a Path,
 	opts: SyncOptions,
 	verbosity: Verbosity,
@@ -67,53 +64,11 @@ struct RepoInfo<'a> {
 	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Provider-neutral details for one remote repository, from either GitHub or GitLab.
-/// `full_name` is the state/skip key and display name; `rel_dir` is the repo's
-/// '/'-separated path under the archive root (identical to `full_name` for GitLab,
-/// canonical `username/name` for GitHub).
-struct RemoteRepo {
-	full_name: String,
-	rel_dir: String,
-	id: u64,
-	pushed_at: Option<chrono::DateTime<chrono::Utc>>,
-	fork: bool,
-	clone_url: Option<String>,
-	ssh_url: Option<String>,
-}
-
-impl RemoteRepo {
-	fn from_github(repo: &Repository, username: &str) -> Self {
-		Self {
-			full_name: repo.full_name.clone().unwrap_or_else(|| format!("{username}/{}", repo.name)),
-			rel_dir: format!("{username}/{}", repo.name),
-			id: repo.id.into_inner(),
-			pushed_at: repo.pushed_at,
-			fork: repo.fork.unwrap_or(false),
-			clone_url: repo.clone_url.as_ref().map(ToString::to_string),
-			ssh_url: repo.ssh_url.clone(),
-		}
-	}
-
-	fn from_gitlab(project: &gitlab::Project, host: &str) -> Self {
-		Self {
-			full_name: format!("{host}/{}", project.path_with_namespace),
-			rel_dir: format!("{host}/{}", project.path_with_namespace),
-			id: project.id,
-			// GitLab's `last_activity_at` updates at most once an hour, so using it to skip pulls could
-			// miss recent pushes. Leaving this unset makes every sync pull.
-			pushed_at: None,
-			fork: project.forked_from.is_some(),
-			clone_url: project.http_url_to_repo.clone(),
-			ssh_url: project.ssh_url_to_repo.clone(),
-		}
-	}
-}
-
 pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let mut updated = false;
 	for user in extra_users {
-		if let Some((host, path)) = gitlab::split_host(user) {
+		if let Some((host, path)) = split_host(user) {
 			if !config.track.iter().any(|u| u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)) {
 				bail!("'{user}' is not tracked yet. Use 'gitkeep add https://{user}' to start tracking it.");
 			}
@@ -168,7 +123,6 @@ async fn sync_all(
 	opts: SyncOptions,
 	verbosity: Verbosity,
 ) -> Result<()> {
-	let client = config.build_client()?;
 	let archive_dir = config.archive_dir()?;
 	fs::create_dir_all(&archive_dir)
 		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
@@ -178,22 +132,33 @@ async fn sync_all(
 		config.excluded.extend(legacy);
 	}
 	let mut totals = Totals::default();
-	let ctx = SyncContext { client: &client, archive_dir: &archive_dir, opts, verbosity };
+	let ctx = SyncContext { archive_dir: &archive_dir, opts, verbosity };
 	let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
+	let mut forges: HashMap<Option<String>, Result<Forge>> = HashMap::new();
 	let mut seen = HashSet::new();
 	let mut config_changed = false;
 	for user in users {
-		if seen.insert(user.name.as_str()) {
-			let renamed = sync_one(user, ctx, config, &mut sync_state).await;
-			if renamed {
-				config_changed = true;
+		if !seen.insert(user.display_name()) {
+			continue;
+		}
+		let forge = forges.entry(user.host.clone()).or_insert_with(|| config.forge(user.host.as_deref()));
+		match forge {
+			Ok(forge) => config_changed |= sync_one(user, forge, ctx, config, &mut sync_state).await,
+			Err(e) => {
+				eprintln!("  Could not sync {}: {e:#}.", user.display_name());
+				sync_state.totals.failed += 1;
 			}
 		}
 	}
 	for full_name in pinned {
-		let renamed = sync_one_pinned(full_name, ctx, config, &mut sync_state).await;
-		if renamed {
-			config_changed = true;
+		let host = split_host(full_name).map(|(h, _)| h.to_string());
+		let forge = forges.entry(host.clone()).or_insert_with(|| config.forge(host.as_deref()));
+		match forge {
+			Ok(forge) => config_changed |= sync_one_pinned(full_name, forge, ctx, config, &mut sync_state).await,
+			Err(e) => {
+				eprintln!("  Could not sync {full_name}: {e:#}.");
+				sync_state.totals.failed += 1;
+			}
 		}
 	}
 	state.save().context("Could not save sync state")?;
@@ -254,230 +219,49 @@ fn build_normal_detail(totals: &Totals) -> Option<String> {
 	Some(out.trim_end().to_string())
 }
 
-#[cfg(test)]
-mod tests {
-	use chrono::{Duration, Utc};
-
-	use super::*;
-
-	#[test]
-	fn skip_pull_when_pushed_at_matches() {
-		let t = Utc::now();
-		assert!(should_skip_pull(Some(t), Some(t)));
-	}
-
-	#[test]
-	fn skip_pull_when_repo_older_than_state() {
-		let older = Utc::now() - Duration::hours(1);
-		let newer = Utc::now();
-		assert!(should_skip_pull(Some(older), Some(newer)));
-	}
-
-	#[test]
-	fn pull_when_repo_pushed_at_is_newer() {
-		let older = Utc::now() - Duration::hours(1);
-		let newer = Utc::now();
-		assert!(!should_skip_pull(Some(newer), Some(older)));
-	}
-
-	#[test]
-	fn pull_when_no_state_pushed_at() {
-		assert!(!should_skip_pull(Some(Utc::now()), None));
-	}
-
-	#[test]
-	fn pull_when_no_repo_pushed_at() {
-		assert!(!should_skip_pull(None, Some(Utc::now())));
-	}
-
-	#[test]
-	fn resolve_submodules_uses_global_default_when_no_override_or_force() {
-		assert!(resolve_submodules(false, None, true));
-		assert!(!resolve_submodules(false, None, false));
-	}
-
-	#[test]
-	fn resolve_submodules_override_beats_global_default() {
-		assert!(resolve_submodules(false, Some(true), false));
-		assert!(!resolve_submodules(false, Some(false), true));
-	}
-
-	#[test]
-	fn resolve_submodules_force_beats_everything() {
-		assert!(resolve_submodules(true, Some(false), false));
-	}
-
-	#[test]
-	fn pull_when_neither_pushed_at() {
-		assert!(!should_skip_pull(None, None));
-	}
-
-	#[test]
-	fn matches_target_plain_name_matches_github_only() {
-		let github = TrackedUser::with_options("alice", false, false);
-		let gitlab = TrackedUser {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("alice", false, false)
-		};
-		assert!(matches_target(&github, "Alice"));
-		assert!(!matches_target(&gitlab, "Alice"));
-	}
-
-	#[test]
-	fn matches_target_host_qualified_matches_gitlab_entry() {
-		let gitlab = TrackedUser {
-			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp/sub", false, false)
-		};
-		assert!(matches_target(&gitlab, "gitlab.example.com/grp/sub"));
-		assert!(!matches_target(&gitlab, "gitlab.other.com/grp/sub"));
-	}
-
-	#[test]
-	fn remote_repo_from_gitlab_prefixes_host() {
-		let project = gitlab::Project {
-			id: 7,
-			path_with_namespace: "grp/proj".to_string(),
-			http_url_to_repo: Some("https://gitlab.example.com/grp/proj.git".to_string()),
-			ssh_url_to_repo: Some("git@gitlab.example.com:grp/proj.git".to_string()),
-			forked_from: None,
-		};
-		let repo = RemoteRepo::from_gitlab(&project, "gitlab.example.com");
-		assert_eq!(repo.full_name, "gitlab.example.com/grp/proj");
-		assert_eq!(repo.rel_dir, "gitlab.example.com/grp/proj");
-		assert!(!repo.fork);
-		assert!(repo.pushed_at.is_none(), "GitLab repos must always be pulled");
-		assert_eq!(clone_url(&repo, false).unwrap(), "https://gitlab.example.com/grp/proj.git");
-		assert_eq!(clone_url(&repo, true).unwrap(), "git@gitlab.example.com:grp/proj.git");
-	}
-
-	#[test]
-	fn identity_mismatch_detects_unrelated_histories() {
-		assert!(indicates_repo_identity_mismatch(b"fatal: refusing to merge unrelated histories"));
-	}
-
-	#[test]
-	fn identity_mismatch_detects_missing_tracked_ref() {
-		let stderr = b"Your configuration specifies to merge with the ref 'refs/heads/master'\n\
-			from the remote, but no such ref was fetched.";
-		assert!(indicates_repo_identity_mismatch(stderr));
-	}
-
-	#[test]
-	fn identity_mismatch_false_for_transient_failure() {
-		assert!(!indicates_repo_identity_mismatch(
-			b"fatal: unable to access 'https://github.com/x/y.git': Could not resolve host"
-		));
-	}
-
-	#[test]
-	fn summary_nothing_to_do_when_truly_empty() {
-		let s = build_summary(&Totals::default());
-		assert_eq!(s, "Nothing to do.");
-	}
-
-	#[test]
-	fn summary_does_not_show_excluded() {
-		let s = build_summary(&Totals { excluded: 5, ..Totals::default() });
-		assert!(!s.contains("excluded"), "got: {s}");
-		assert!(!s.contains("skipped"), "got: {s}");
-	}
-
-	#[test]
-	fn summary_shows_done_when_only_excluded() {
-		let s = build_summary(&Totals { excluded: 5, ..Totals::default() });
-		assert_eq!(s, "Done.");
-	}
-
-	#[test]
-	fn detail_empty_when_nothing_notable() {
-		let totals = Totals { pulled_up_to_date: 5, ..Totals::default() };
-		assert!(build_normal_detail(&totals).is_none());
-	}
-
-	#[test]
-	fn detail_shows_cloned_section() {
-		let totals = Totals { new_repos: vec!["alice/fresh".to_string()], cloned: 1, ..Totals::default() };
-		let detail = build_normal_detail(&totals).unwrap();
-		assert!(detail.contains("Cloned"), "got: {detail}");
-		assert!(detail.contains("alice/fresh"), "got: {detail}");
-	}
-
-	#[test]
-	fn detail_shows_updated_section() {
-		let totals = Totals { updated_repos: vec!["alice/old".to_string()], pulled_updated: 1, ..Totals::default() };
-		let detail = build_normal_detail(&totals).unwrap();
-		assert!(detail.contains("Updated"), "got: {detail}");
-		assert!(detail.contains("alice/old"), "got: {detail}");
-	}
-
-	#[test]
-	fn detail_omits_empty_sections() {
-		let totals = Totals { updated_repos: vec!["alice/repo".to_string()], pulled_updated: 1, ..Totals::default() };
-		let detail = build_normal_detail(&totals).unwrap();
-		assert!(!detail.contains("Cloned"), "got: {detail}");
-	}
-
-	#[test]
-	fn detail_shows_both_sections_when_populated() {
-		let totals = Totals {
-			new_repos: vec!["alice/new".to_string()],
-			updated_repos: vec!["alice/old".to_string()],
-			cloned: 1,
-			pulled_updated: 1,
-			..Totals::default()
-		};
-		let detail = build_normal_detail(&totals).unwrap();
-		assert!(detail.contains("Cloned"), "got: {detail}");
-		assert!(detail.contains("Updated"), "got: {detail}");
-	}
-}
-
 /// True when a `sync <target>` argument names this tracked account: a plain name matches
-/// a GitHub account, a `host/path` name matches a GitLab one.
+/// a GitHub account, a `host/path` name matches an account on that host.
 fn matches_target(user: &TrackedUser, target: &str) -> bool {
-	if let Some((host, path)) = gitlab::split_host(target) {
+	if let Some((host, path)) = split_host(target) {
 		user.host.as_deref() == Some(host) && user.name.eq_ignore_ascii_case(path)
 	} else {
 		user.host.is_none() && user.name.eq_ignore_ascii_case(target)
 	}
 }
 
+/// Syncs every repo of one tracked account. Follows account renames (by stable id, where the forge
+/// has one), moving the local archive and updating the config. Returns `true` if the config changed.
 async fn sync_one(
 	user: &TrackedUser,
+	forge: &Forge,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
 ) -> bool {
-	if let Some(host) = user.host.clone() {
-		sync_one_gitlab(user, &host, ctx, config, sync_state).await;
-		return false;
-	}
+	let display = user.display_name();
 	if ctx.verbosity == Verbosity::Verbose {
-		println!("Checking {}...", user.name);
+		println!("Checking {display}...");
 	}
-	let mut account = fetch_account(ctx.client, &user.name).await;
-	if account.is_none()
-		&& let Some(id) = user.id
-	{
-		// The name-based lookup 404d; the account may have been renamed. Its stable id
-		// still resolves to the current login regardless of how many times it's changed.
-		account = fetch_account_by_id(ctx.client, id).await;
-	}
-	let canonical = account.as_ref().map_or_else(|| user.name.clone(), |a| a.login.clone());
-	let is_org = account.as_ref().is_some_and(|a| a.account_type == "Organization");
-
+	let account = match forge.account(&user.name, user.id).await {
+		Ok(account) => account,
+		Err(e) => {
+			eprintln!("  Could not fetch repositories for {display}: {e:#}.");
+			sync_state.totals.failed += 1;
+			return false;
+		}
+	};
 	let mut config_changed = false;
-	if let Some(entry) = config.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(&user.name)) {
-		if let Some(a) = &account
-			&& entry.id != Some(a.id)
-		{
-			entry.id = Some(a.id);
+	let current = if let Some(entry) =
+		config.track.iter_mut().find(|u| u.host == user.host && u.name.eq_ignore_ascii_case(&user.name))
+	{
+		if account.id.is_some() && entry.id != account.id {
+			entry.id = account.id;
 			config_changed = true;
 		}
-		if canonical != entry.name {
-			let old_dir = ctx.archive_dir.join(&entry.name);
-			let new_dir = ctx.archive_dir.join(&canonical);
+		if account.name != entry.name {
+			let old_dir = archive_path(ctx.archive_dir, &entry.display_name());
+			entry.name.clone_from(&account.name);
+			let new_dir = archive_path(ctx.archive_dir, &entry.display_name());
 			if old_dir.exists()
 				&& !new_dir.exists()
 				&& let Err(e) = fs::rename(&old_dir, &new_dir)
@@ -485,72 +269,21 @@ async fn sync_one(
 				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
 			}
 			if ctx.verbosity != Verbosity::Quiet {
-				println!("Username updated: {} → {}", entry.name, canonical);
+				println!("Username updated: {display} → {}", entry.display_name());
 			}
-			entry.name.clone_from(&canonical);
 			config_changed = true;
 		}
-	}
-
-	let repos_result = if is_org {
-		if config.token.is_some() {
-			fetch_org(ctx.client, &canonical).await
-		} else {
-			fetch_public(ctx.client, &canonical).await
-		}
-	} else if config.token.is_some() {
-		fetch_with_token(ctx.client, &canonical).await
+		entry.clone()
 	} else {
-		fetch_public(ctx.client, &canonical).await
+		user.clone()
 	};
-	match repos_result {
-		Ok(repos) => {
-			let include_forks = ctx.opts.force_forks || user.forks;
-			let use_submodules = resolve_submodules(ctx.opts.force_submodules, user.submodules, config.submodules);
-			let repos: Vec<RemoteRepo> = repos.iter().map(|r| RemoteRepo::from_github(r, &canonical)).collect();
-			report_found(&repos, &canonical, &canonical, include_forks, ctx.verbosity);
-			sync_repo_list(repos, include_forks, use_submodules, ctx, config, sync_state);
-		}
-		Err(e) => {
-			eprintln!("  Could not fetch repositories for {canonical}: {e:#}.");
-			sync_state.totals.failed += 1;
-		}
-	}
+	let include_forks = ctx.opts.force_forks || user.forks;
+	let use_submodules = resolve_submodules(ctx.opts.force_submodules, user.submodules, config.submodules);
+	let add_hint =
+		current.host.as_ref().map_or_else(|| current.name.clone(), |h| format!("https://{h}/{}", current.name));
+	report_found(&account.repos, &current.display_name(), &add_hint, include_forks, ctx.verbosity);
+	sync_repo_list(account.repos, include_forks, use_submodules, ctx, config, sync_state);
 	config_changed
-}
-
-async fn sync_one_gitlab(
-	user: &TrackedUser,
-	host: &str,
-	ctx: SyncContext<'_>,
-	config: &Config,
-	sync_state: &mut SyncState<'_>,
-) {
-	let display = user.display_name();
-	if ctx.verbosity == Verbosity::Verbose {
-		println!("Checking {display}...");
-	}
-	let client = match gitlab::GitLabClient::new(host, config.gitlab_token(host)) {
-		Ok(c) => c,
-		Err(e) => {
-			eprintln!("  Could not connect to {host}: {e:#}.");
-			sync_state.totals.failed += 1;
-			return;
-		}
-	};
-	match client.fetch_namespace_projects(&user.name).await {
-		Ok(projects) => {
-			let include_forks = ctx.opts.force_forks || user.forks;
-			let use_submodules = resolve_submodules(ctx.opts.force_submodules, user.submodules, config.submodules);
-			let repos: Vec<RemoteRepo> = projects.iter().map(|p| RemoteRepo::from_gitlab(p, host)).collect();
-			report_found(&repos, &display, &format!("https://{display}"), include_forks, ctx.verbosity);
-			sync_repo_list(repos, include_forks, use_submodules, ctx, config, sync_state);
-		}
-		Err(e) => {
-			eprintln!("  Could not fetch repositories for {display}: {e:#}.");
-			sync_state.totals.failed += 1;
-		}
-	}
 }
 
 /// Prints the verbose "Found N repositories" line, with a fork-skip hint when relevant.
@@ -572,101 +305,59 @@ fn report_found(repos: &[RemoteRepo], display: &str, add_target: &str, include_f
 	println!("{msg}");
 }
 
+/// Syncs one individually pinned repo. Follows renames (by stable id, where the forge has one),
+/// moving the local copy and updating the pin. Returns `true` if the config changed.
 async fn sync_one_pinned(
 	full_name: &str,
+	forge: &Forge,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
 ) -> bool {
-	if let Some((host, path)) = gitlab::split_host(full_name) {
-		sync_one_pinned_gitlab(full_name, host, path, ctx, config, sync_state).await;
-		return false;
-	}
-	let Some((user, name)) = full_name.split_once('/') else { return false };
 	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {full_name}...");
 	}
+	let path = split_host(full_name).map_or(full_name, |(_, path)| path);
 	let stored_id = config.pinned_id(full_name);
 	let use_submodules =
 		resolve_submodules(ctx.opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
-	let mut repo = ctx.client.repos(user, name).get().await.ok();
-	if repo.is_none()
-		&& let Some(id) = stored_id
-	{
-		// The owner/repo lookup 404d; the repo or its owner may have been renamed. Its
-		// stable id still resolves to the current owner/name regardless.
-		repo = fetch_repo_by_id(ctx.client, id).await;
-	}
-	let Some(repo) = repo else {
-		eprintln!("  Could not fetch {full_name}.");
-		sync_state.totals.failed += 1;
-		return false;
-	};
-
-	let mut config_changed = false;
-	let repo_id = repo.id.into_inner();
-	let repo_full_name = repo.full_name.clone().unwrap_or_else(|| full_name.to_string());
-	if repo_full_name != full_name {
-		if let Some((new_user, new_name)) = repo_full_name.split_once('/') {
-			let old_dir = ctx.archive_dir.join(user).join(name);
-			let new_dir = ctx.archive_dir.join(new_user).join(new_name);
-			if old_dir.exists()
-				&& !new_dir.exists()
-				&& let Err(e) = fs::rename(&old_dir, &new_dir)
-			{
-				eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
-			}
-		}
-		if ctx.verbosity != Verbosity::Quiet {
-			println!("Pinned repo updated: {full_name} → {repo_full_name}");
-		}
-		config.rename_pin(full_name, &repo_full_name);
-		config_changed = true;
-	}
-	if stored_id != Some(repo_id)
-		&& let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name == repo_full_name)
-	{
-		pin.id = Some(repo_id);
-		config_changed = true;
-	}
-
-	let owner = repo_full_name.split_once('/').map_or_else(|| user.to_string(), |(u, _)| u.to_string());
-	let repos = vec![RemoteRepo::from_github(&repo, &owner)];
-	sync_repo_list(repos, true, use_submodules, ctx, config, sync_state);
-	config_changed
-}
-
-async fn sync_one_pinned_gitlab(
-	full_name: &str,
-	host: &str,
-	path: &str,
-	ctx: SyncContext<'_>,
-	config: &Config,
-	sync_state: &mut SyncState<'_>,
-) {
-	if ctx.verbosity == Verbosity::Verbose {
-		println!("Checking {full_name}...");
-	}
-	let use_submodules =
-		resolve_submodules(ctx.opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
-	let client = match gitlab::GitLabClient::new(host, config.gitlab_token(host)) {
-		Ok(c) => c,
-		Err(e) => {
-			eprintln!("  Could not connect to {host}: {e:#}.");
+	let repo = match forge.repo(path, stored_id).await {
+		Ok(Some(repo)) => repo,
+		Ok(None) => {
+			eprintln!("  Could not fetch {full_name}.");
 			sync_state.totals.failed += 1;
-			return;
-		}
-	};
-	match client.fetch_project(path).await {
-		Ok(project) => {
-			let repos = vec![RemoteRepo::from_gitlab(&project, host)];
-			sync_repo_list(repos, true, use_submodules, ctx, config, sync_state);
+			return false;
 		}
 		Err(e) => {
 			eprintln!("  Could not fetch {full_name}: {e:#}.");
 			sync_state.totals.failed += 1;
+			return false;
 		}
+	};
+	let mut config_changed = repo.full_name != full_name;
+	if config_changed {
+		let old_dir = archive_path(ctx.archive_dir, full_name);
+		let new_dir = archive_path(ctx.archive_dir, &repo.rel_dir);
+		if old_dir.exists()
+			&& !new_dir.exists()
+			&& let Some(parent) = new_dir.parent()
+			&& let Err(e) = fs::create_dir_all(parent).and_then(|()| fs::rename(&old_dir, &new_dir))
+		{
+			eprintln!("  Could not rename {} to {}: {e}.", old_dir.display(), new_dir.display());
+		}
+		if ctx.verbosity != Verbosity::Quiet {
+			println!("Pinned repo updated: {full_name} → {}", repo.full_name);
+		}
+		config.rename_pin(full_name, &repo.full_name);
 	}
+	if stored_id != Some(repo.id)
+		&& let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name == repo.full_name)
+	{
+		pin.id = Some(repo.id);
+		config_changed = true;
+	}
+	sync_repo_list(vec![repo], true, use_submodules, ctx, config, sync_state);
+	config_changed
 }
 
 fn sync_repo_list(
@@ -687,7 +378,7 @@ fn sync_repo_list(
 			sync_state.totals.excluded += 1;
 			continue;
 		}
-		let Some(url) = clone_url(&repo, config.use_ssh) else {
+		let Some(url) = repo.clone_url(config.use_ssh) else {
 			sync_state.totals.excluded += 1;
 			continue;
 		};
@@ -820,88 +511,6 @@ fn clone_and_record(
 	}
 }
 
-async fn fetch_with_token(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
-	let (public, accessible) = tokio::try_join!(fetch_public(client, username), fetch_authenticated(client, username))?;
-	let mut seen = HashSet::new();
-	let mut merged = Vec::with_capacity(public.len() + accessible.len());
-	for repo in public.into_iter().chain(accessible) {
-		if seen.insert(repo.id) {
-			merged.push(repo);
-		}
-	}
-	Ok(merged)
-}
-
-async fn fetch_authenticated(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
-	let page = client
-		.current()
-		.list_repos_for_authenticated_user()
-		.per_page(100u8)
-		.send()
-		.await
-		.context("Could not fetch your repositories from GitHub")?;
-	let repos = client.all_pages(page).await.context("Could not retrieve all repository pages")?;
-	Ok(repos.into_iter().filter(|r| r.owner.as_ref().is_some_and(|o| o.login.eq_ignore_ascii_case(username))).collect())
-}
-
-#[derive(Deserialize)]
-struct AccountInfo {
-	login: String,
-	id: u64,
-	#[serde(rename = "type")]
-	account_type: String,
-}
-
-async fn fetch_account(client: &Octocrab, name: &str) -> Option<AccountInfo> {
-	client.get(format!("/users/{name}"), None::<&()>).await.ok()
-}
-
-/// Resolves an account by its stable numeric id, which survives username renames
-/// (unlike `/users/{name}`, which 404s once the old name is gone).
-async fn fetch_account_by_id(client: &Octocrab, id: u64) -> Option<AccountInfo> {
-	client.get(format!("/user/{id}"), None::<&()>).await.ok()
-}
-
-/// Resolves a repository by its stable numeric id, which survives owner and repo renames
-/// (unlike `/repos/{owner}/{name}`, which 404s once the old owner/name is gone).
-async fn fetch_repo_by_id(client: &Octocrab, id: u64) -> Option<Repository> {
-	client.get(format!("/repositories/{id}"), None::<&()>).await.ok()
-}
-
-pub async fn resolve_login(client: &Octocrab, name: &str) -> Result<String> {
-	let info: AccountInfo = client
-		.get(format!("/users/{name}"), None::<&()>)
-		.await
-		.with_context(|| format!("Could not find GitHub user '{name}'"))?;
-	Ok(info.login)
-}
-
-async fn fetch_org(client: &Octocrab, org: &str) -> Result<Vec<Repository>> {
-	let page = client
-		.orgs(org)
-		.list_repos()
-		.per_page(100u8)
-		.send()
-		.await
-		.with_context(|| format!("Could not fetch repositories for org {org}"))?;
-	client.all_pages(page).await.with_context(|| format!("Could not retrieve all repository pages for org {org}"))
-}
-
-async fn fetch_public(client: &Octocrab, username: &str) -> Result<Vec<Repository>> {
-	let page = client
-		.users(username)
-		.repos()
-		.per_page(100u8)
-		.send()
-		.await
-		.with_context(|| format!("Could not fetch public repositories for {username}"))?;
-	client.all_pages(page).await.with_context(|| format!("Could not retrieve all repository pages for {username}"))
-}
-
-fn clone_url(repo: &RemoteRepo, use_ssh: bool) -> Option<String> {
-	if use_ssh { repo.ssh_url.clone() } else { repo.clone_url.clone() }
-}
-
 fn should_skip_pull(
 	repo_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
 	state_pushed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -995,4 +604,165 @@ fn update_submodules(repo_dir: &Path, verbosity: Verbosity) -> Result<()> {
 	let mut cmd = Command::new("git");
 	cmd.args(["submodule", "update", "--init", "--recursive"]).current_dir(repo_dir);
 	run_git(cmd, verbosity, "git submodule update")
+}
+
+#[cfg(test)]
+mod tests {
+	use chrono::{Duration, Utc};
+
+	use super::*;
+
+	#[test]
+	fn skip_pull_when_pushed_at_matches() {
+		let t = Utc::now();
+		assert!(should_skip_pull(Some(t), Some(t)));
+	}
+
+	#[test]
+	fn skip_pull_when_repo_older_than_state() {
+		let older = Utc::now() - Duration::hours(1);
+		let newer = Utc::now();
+		assert!(should_skip_pull(Some(older), Some(newer)));
+	}
+
+	#[test]
+	fn pull_when_repo_pushed_at_is_newer() {
+		let older = Utc::now() - Duration::hours(1);
+		let newer = Utc::now();
+		assert!(!should_skip_pull(Some(newer), Some(older)));
+	}
+
+	#[test]
+	fn pull_when_no_state_pushed_at() {
+		assert!(!should_skip_pull(Some(Utc::now()), None));
+	}
+
+	#[test]
+	fn pull_when_no_repo_pushed_at() {
+		assert!(!should_skip_pull(None, Some(Utc::now())));
+	}
+
+	#[test]
+	fn resolve_submodules_uses_global_default_when_no_override_or_force() {
+		assert!(resolve_submodules(false, None, true));
+		assert!(!resolve_submodules(false, None, false));
+	}
+
+	#[test]
+	fn resolve_submodules_override_beats_global_default() {
+		assert!(resolve_submodules(false, Some(true), false));
+		assert!(!resolve_submodules(false, Some(false), true));
+	}
+
+	#[test]
+	fn resolve_submodules_force_beats_everything() {
+		assert!(resolve_submodules(true, Some(false), false));
+	}
+
+	#[test]
+	fn pull_when_neither_pushed_at() {
+		assert!(!should_skip_pull(None, None));
+	}
+
+	#[test]
+	fn matches_target_plain_name_matches_github_only() {
+		let github = TrackedUser::with_options("alice", false, false);
+		let gitlab = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("alice", false, false)
+		};
+		assert!(matches_target(&github, "Alice"));
+		assert!(!matches_target(&gitlab, "Alice"));
+	}
+
+	#[test]
+	fn matches_target_host_qualified_matches_gitlab_entry() {
+		let gitlab = TrackedUser {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedUser::with_options("grp/sub", false, false)
+		};
+		assert!(matches_target(&gitlab, "gitlab.example.com/grp/sub"));
+		assert!(!matches_target(&gitlab, "gitlab.other.com/grp/sub"));
+	}
+
+	#[test]
+	fn identity_mismatch_detects_unrelated_histories() {
+		assert!(indicates_repo_identity_mismatch(b"fatal: refusing to merge unrelated histories"));
+	}
+
+	#[test]
+	fn identity_mismatch_detects_missing_tracked_ref() {
+		let stderr = b"Your configuration specifies to merge with the ref 'refs/heads/master'\n\
+			from the remote, but no such ref was fetched.";
+		assert!(indicates_repo_identity_mismatch(stderr));
+	}
+
+	#[test]
+	fn identity_mismatch_false_for_transient_failure() {
+		assert!(!indicates_repo_identity_mismatch(
+			b"fatal: unable to access 'https://github.com/x/y.git': Could not resolve host"
+		));
+	}
+
+	#[test]
+	fn summary_nothing_to_do_when_truly_empty() {
+		let s = build_summary(&Totals::default());
+		assert_eq!(s, "Nothing to do.");
+	}
+
+	#[test]
+	fn summary_does_not_show_excluded() {
+		let s = build_summary(&Totals { excluded: 5, ..Totals::default() });
+		assert!(!s.contains("excluded"), "got: {s}");
+		assert!(!s.contains("skipped"), "got: {s}");
+	}
+
+	#[test]
+	fn summary_shows_done_when_only_excluded() {
+		let s = build_summary(&Totals { excluded: 5, ..Totals::default() });
+		assert_eq!(s, "Done.");
+	}
+
+	#[test]
+	fn detail_empty_when_nothing_notable() {
+		let totals = Totals { pulled_up_to_date: 5, ..Totals::default() };
+		assert!(build_normal_detail(&totals).is_none());
+	}
+
+	#[test]
+	fn detail_shows_cloned_section() {
+		let totals = Totals { new_repos: vec!["alice/fresh".to_string()], cloned: 1, ..Totals::default() };
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(detail.contains("Cloned"), "got: {detail}");
+		assert!(detail.contains("alice/fresh"), "got: {detail}");
+	}
+
+	#[test]
+	fn detail_shows_updated_section() {
+		let totals = Totals { updated_repos: vec!["alice/old".to_string()], pulled_updated: 1, ..Totals::default() };
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(detail.contains("Updated"), "got: {detail}");
+		assert!(detail.contains("alice/old"), "got: {detail}");
+	}
+
+	#[test]
+	fn detail_omits_empty_sections() {
+		let totals = Totals { updated_repos: vec!["alice/repo".to_string()], pulled_updated: 1, ..Totals::default() };
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(!detail.contains("Cloned"), "got: {detail}");
+	}
+
+	#[test]
+	fn detail_shows_both_sections_when_populated() {
+		let totals = Totals {
+			new_repos: vec!["alice/new".to_string()],
+			updated_repos: vec!["alice/old".to_string()],
+			cloned: 1,
+			pulled_updated: 1,
+			..Totals::default()
+		};
+		let detail = build_normal_detail(&totals).unwrap();
+		assert!(detail.contains("Cloned"), "got: {detail}");
+		assert!(detail.contains("Updated"), "got: {detail}");
+	}
 }

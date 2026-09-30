@@ -1,17 +1,17 @@
 use std::{
-	collections::{HashMap, HashSet},
+	collections::{BTreeMap, HashMap, HashSet},
 	fs, mem,
 	path::PathBuf,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use dirs::home_dir;
 use octocrab::{Octocrab, OctocrabBuilder};
 use serde::{Deserialize, Serialize};
 use toml::{from_str, to_string_pretty};
 
-use crate::gitlab::split_host;
+use crate::forge::{Forge, ForgeKind, GitHub, GitLab, split_host};
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(v: &bool) -> bool {
@@ -34,15 +34,27 @@ pub struct Config {
 	pub no_sync: bool,
 	#[serde(default)]
 	pub track: Vec<TrackedUser>,
-	/// Personal access tokens for GitLab instances, keyed by host (e.g. "gitlab.com").
-	#[serde(default, skip_serializing_if = "HashMap::is_empty")]
-	pub gitlab_tokens: HashMap<String, String>,
+	/// Self-hosted forges, keyed by host (e.g. "gitlab.com"). github.com is never listed; it's the
+	/// default and uses `token`.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub hosts: BTreeMap<String, HostConfig>,
+	/// Pre-`hosts` per-host GitLab tokens. Only read, and folded into `hosts` on load.
+	#[serde(default, skip_serializing)]
+	gitlab_tokens: HashMap<String, String>,
 	/// Repos under a fully tracked account that were removed with `gitkeep remove user/repo` and
 	/// are left out of syncs. Read from the pre-0.3.0 `skipped` key too.
 	#[serde(default, alias = "skipped", skip_serializing_if = "HashSet::is_empty")]
 	pub excluded: HashSet<String>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub pinned: Vec<PinnedRepo>,
+}
+
+/// A self-hosted forge: which software it runs and, optionally, a token for private repos.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostConfig {
+	pub kind: ForgeKind,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +70,8 @@ pub struct TrackedUser {
 	/// Overrides the global `submodules` default for this account. `None` inherits it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub submodules: Option<bool>,
-	/// GitLab host this account lives on (e.g. "gitlab.example.com"). `None` means GitHub.
+	/// Forge host this account lives on (e.g. "gitlab.example.com"), described in `Config::hosts`.
+	/// `None` means GitHub.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub host: Option<String>,
 }
@@ -141,7 +154,27 @@ impl Config {
 		}
 		let raw =
 			fs::read_to_string(&path).with_context(|| format!("Could not read config from {}", path.display()))?;
-		from_str(&raw).with_context(|| format!("Config at {} is not valid TOML", path.display()))
+		let mut config: Self =
+			from_str(&raw).with_context(|| format!("Config at {} is not valid TOML", path.display()))?;
+		config.migrate_legacy_hosts();
+		Ok(config)
+	}
+
+	/// Before `[hosts]` existed, GitLab was the only other forge: tokens lived in `gitlab_tokens` and
+	/// any host-qualified account or pin was on GitLab. Record those hosts explicitly.
+	fn migrate_legacy_hosts(&mut self) {
+		for (host, token) in mem::take(&mut self.gitlab_tokens) {
+			self.hosts.entry(host).or_insert(HostConfig { kind: ForgeKind::GitLab, token: None }).token = Some(token);
+		}
+		let used = self
+			.track
+			.iter()
+			.filter_map(|u| u.host.clone())
+			.chain(self.pinned.iter().filter_map(|p| split_host(&p.full_name).map(|(h, _)| h.to_string())))
+			.collect::<Vec<_>>();
+		for host in used {
+			self.hosts.entry(host).or_insert(HostConfig { kind: ForgeKind::GitLab, token: None });
+		}
 	}
 
 	pub fn save(&self) -> Result<()> {
@@ -174,8 +207,17 @@ impl Config {
 		)
 	}
 
-	pub fn gitlab_token(&self, host: &str) -> Option<String> {
-		self.gitlab_tokens.get(host).cloned()
+	/// Connects to the forge at `host` (`None` for GitHub). The host must already be in `hosts`.
+	pub fn forge(&self, host: Option<&str>) -> Result<Forge> {
+		let Some(host) = host else {
+			return Ok(Forge::GitHub(GitHub::new(self.build_client()?, self.token.is_some())));
+		};
+		let Some(entry) = self.hosts.get(host) else {
+			bail!("{host} isn't a known forge. Add something from it with 'gitkeep add https://{host}/...' first.");
+		};
+		match entry.kind {
+			ForgeKind::GitLab => Ok(Forge::GitLab(GitLab::new(host, entry.token.as_deref())?)),
+		}
 	}
 
 	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool, submodules: Option<bool>) -> bool {
@@ -246,14 +288,16 @@ impl Config {
 		changed
 	}
 
-	pub fn remove_user(&mut self, user: &str) -> bool {
+	/// Stops tracking the account `user` on `host` (`None` for GitHub).
+	pub fn remove_user(&mut self, host: Option<&str>, user: &str) -> bool {
 		let before = self.track.len();
-		self.track.retain(|u| !u.name.eq_ignore_ascii_case(user));
+		self.track.retain(|u| !(u.host.as_deref() == host && u.name.eq_ignore_ascii_case(user)));
+		let display = host.map_or_else(|| user.to_string(), |h| format!("{h}/{user}"));
 		if self.track.len() < before {
-			println!("Stopped tracking {user}.");
+			println!("Stopped tracking {display}.");
 			true
 		} else {
-			println!("Not tracking {user}.");
+			println!("Not tracking {display}.");
 			false
 		}
 	}
@@ -282,11 +326,6 @@ impl Config {
 		self.excluded.iter().any(|r| r.eq_ignore_ascii_case(full_name))
 	}
 
-	/// Drops every exclusion under `user` (case-insensitive), e.g. once the whole account is removed.
-	pub fn remove_exclusions_for_user(&mut self, user: &str) {
-		self.excluded.retain(|r| !r.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)));
-	}
-
 	/// Drops every exclusion that `tracked`'s sync would include, e.g. once that account is removed.
 	pub fn remove_exclusions_covered(&mut self, tracked: &TrackedUser) {
 		self.excluded.retain(|r| !tracked.covers(r));
@@ -304,10 +343,10 @@ impl Config {
 	}
 
 	/// Returns `true` if the repo was pinned and is now removed, `false` if it wasn't pinned.
-	pub fn unpin_repo(&mut self, full_name: &str) -> bool {
-		let before = self.pinned.len();
-		self.pinned.retain(|p| p.full_name != full_name);
-		self.pinned.len() < before
+	/// Unpins a repo (case-insensitively) and returns its stored name, or `None` if it wasn't pinned.
+	pub fn unpin_repo(&mut self, full_name: &str) -> Option<String> {
+		let index = self.pinned.iter().position(|p| p.full_name.eq_ignore_ascii_case(full_name))?;
+		Some(self.pinned.remove(index).full_name)
 	}
 
 	pub fn is_pinned(&self, full_name: &str) -> bool {
@@ -335,34 +374,10 @@ impl Config {
 		}
 	}
 
-	/// Returns the sorted full names of pinned repos owned by `user` (case-insensitive).
-	pub fn pinned_repos_for_user(&self, user: &str) -> Vec<String> {
-		let mut matching: Vec<String> = self
-			.pinned
-			.iter()
-			.filter(|p| p.full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)))
-			.map(|p| p.full_name.clone())
-			.collect();
-		matching.sort();
-		matching
-	}
-
 	/// Removes all pinned repos already covered by `tracked` and returns their full names.
 	pub fn remove_pins_covered(&mut self, tracked: &TrackedUser) -> Vec<String> {
 		let to_remove: Vec<String> =
 			self.pinned.iter().filter(|p| tracked.covers(&p.full_name)).map(|p| p.full_name.clone()).collect();
-		self.pinned.retain(|p| !to_remove.contains(&p.full_name));
-		to_remove
-	}
-
-	/// Removes all pinned repos owned by `user` (case-insensitive) and returns their full names.
-	pub fn remove_pins_for_user(&mut self, user: &str) -> Vec<String> {
-		let to_remove: Vec<String> = self
-			.pinned
-			.iter()
-			.filter(|p| p.full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)))
-			.map(|p| p.full_name.clone())
-			.collect();
 		self.pinned.retain(|p| !to_remove.contains(&p.full_name));
 		to_remove
 	}
@@ -471,12 +486,12 @@ mod tests {
 	}
 
 	#[test]
-	fn remove_exclusions_for_user_only_touches_that_user() {
+	fn remove_exclusions_covered_only_touches_that_user() {
 		let mut config = Config::default();
 		config.exclude_repo("Alice/a");
 		config.exclude_repo("alice/b");
 		config.exclude_repo("bob/c");
-		config.remove_exclusions_for_user("alice");
+		config.remove_exclusions_covered(&TrackedUser::with_options("alice", false, false));
 		assert!(!config.is_excluded("alice/a"));
 		assert!(!config.is_excluded("alice/b"));
 		assert!(config.is_excluded("bob/c"));
@@ -549,16 +564,16 @@ mod tests {
 	}
 
 	#[test]
-	fn config_unpin_repo_returns_true_when_was_pinned() {
+	fn config_unpin_repo_returns_stored_name_ignoring_case() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("user/repo", None, None);
-		assert!(config.unpin_repo("user/repo"));
+		assert_eq!(config.unpin_repo("User/Repo").as_deref(), Some("user/repo"));
 	}
 
 	#[test]
-	fn config_unpin_repo_returns_false_when_not_pinned() {
+	fn config_unpin_repo_returns_none_when_not_pinned() {
 		let mut config = Config::default();
-		assert!(!config.unpin_repo("user/repo"));
+		assert!(config.unpin_repo("user/repo").is_none());
 	}
 
 	#[test]
@@ -685,36 +700,12 @@ mod tests {
 	}
 
 	#[test]
-	fn pinned_repos_for_user_returns_sorted_matches() {
-		let mut config = Config::default();
-		config.pin_repo_with_options("alice/zzz", None, None);
-		config.pin_repo_with_options("alice/aaa", None, None);
-		config.pin_repo_with_options("bob/baz", None, None);
-		let matching = config.pinned_repos_for_user("alice");
-		assert_eq!(matching, vec!["alice/aaa".to_string(), "alice/zzz".to_string()]);
-	}
-
-	#[test]
-	fn pinned_repos_for_user_is_case_insensitive() {
-		let mut config = Config::default();
-		config.pin_repo_with_options("Alice/foo", None, None);
-		assert_eq!(config.pinned_repos_for_user("alice"), vec!["Alice/foo".to_string()]);
-	}
-
-	#[test]
-	fn pinned_repos_for_user_returns_empty_when_none() {
-		let mut config = Config::default();
-		config.pin_repo_with_options("bob/baz", None, None);
-		assert!(config.pinned_repos_for_user("alice").is_empty());
-	}
-
-	#[test]
-	fn config_remove_pins_for_user_removes_matching() {
+	fn config_remove_pins_covered_removes_matching() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("alice/foo", None, None);
 		config.pin_repo_with_options("alice/bar", None, None);
 		config.pin_repo_with_options("bob/baz", None, None);
-		let removed = config.remove_pins_for_user("alice");
+		let removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
 		assert_eq!(removed.len(), 2);
 		assert!(!config.is_pinned("alice/foo"));
 		assert!(!config.is_pinned("alice/bar"));
@@ -722,19 +713,19 @@ mod tests {
 	}
 
 	#[test]
-	fn config_remove_pins_for_user_case_insensitive() {
+	fn config_remove_pins_covered_case_insensitive() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("Alice/foo", None, None);
-		let removed = config.remove_pins_for_user("alice");
+		let removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
 		assert_eq!(removed.len(), 1);
 		assert!(!config.is_pinned("Alice/foo"));
 	}
 
 	#[test]
-	fn config_remove_pins_for_user_returns_empty_when_none() {
+	fn config_remove_pins_covered_returns_empty_when_none() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("bob/baz", None, None);
-		let removed = config.remove_pins_for_user("alice");
+		let removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
 		assert!(removed.is_empty());
 	}
 
@@ -814,6 +805,53 @@ mod tests {
 		let raw = toml::to_string(&config).unwrap();
 		assert!(!raw.contains("gitlab_tokens"), "got: {raw}");
 		assert!(!raw.contains("host"), "got: {raw}");
+	}
+
+	#[test]
+	fn legacy_gitlab_tokens_migrate_into_hosts() {
+		let mut config: Config = from_str(
+			r#"
+			[gitlab_tokens]
+			"gitlab.example.com" = "glpat-secret"
+			"#,
+		)
+		.unwrap();
+		config.migrate_legacy_hosts();
+		let host = &config.hosts["gitlab.example.com"];
+		assert_eq!(host.kind, ForgeKind::GitLab);
+		assert_eq!(host.token.as_deref(), Some("glpat-secret"));
+		let raw = to_string_pretty(&config).unwrap();
+		assert!(!raw.contains("gitlab_tokens"), "got: {raw}");
+		assert!(raw.contains("[hosts.\"gitlab.example.com\"]"), "got: {raw}");
+	}
+
+	#[test]
+	fn legacy_host_qualified_entries_are_assumed_gitlab() {
+		let mut config = Config::default();
+		config.add_user_on(Some("git.example.org"), "grp", false, false, None);
+		config.pin_repo_with_options("code.example.net/team/proj", None, None);
+		config.migrate_legacy_hosts();
+		assert_eq!(config.hosts["git.example.org"].kind, ForgeKind::GitLab);
+		assert_eq!(config.hosts["code.example.net"].kind, ForgeKind::GitLab);
+		assert!(config.hosts["git.example.org"].token.is_none());
+	}
+
+	#[test]
+	fn migration_keeps_existing_host_kinds() {
+		let mut config = Config::default();
+		config
+			.hosts
+			.insert("git.example.org".to_string(), HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()) });
+		config.add_user_on(Some("git.example.org"), "grp", false, false, None);
+		config.migrate_legacy_hosts();
+		assert_eq!(config.hosts["git.example.org"].token.as_deref(), Some("t"));
+	}
+
+	#[test]
+	fn forge_for_unknown_host_is_an_error() {
+		let config = Config::default();
+		let err = config.forge(Some("git.example.org")).err().unwrap();
+		assert!(err.to_string().contains("isn't a known forge"), "got: {err}");
 	}
 
 	#[test]
