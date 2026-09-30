@@ -30,7 +30,6 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 			&& !config.hosts.contains_key(host)
 		{
 			let kind = forge::detect(host).await?;
-			println!("Detected {host} as {}.", kind.name());
 			config.hosts.insert(host.clone(), HostConfig { kind, token: None });
 			changed = true;
 		}

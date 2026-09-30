@@ -23,15 +23,6 @@ pub enum ForgeKind {
 	Forgejo,
 }
 
-impl ForgeKind {
-	pub const fn name(self) -> &'static str {
-		match self {
-			Self::GitLab => "GitLab",
-			Self::Forgejo => "Forgejo",
-		}
-	}
-}
-
 /// A connected forge. Every forge answers the same questions, so sync, add, and remove never need
 /// to know which one they're talking to.
 pub enum Forge {

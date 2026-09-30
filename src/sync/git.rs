@@ -4,7 +4,7 @@ use std::{
 	process::{Command, Stdio},
 };
 
-use anyhow::{Context, Error, Result, bail};
+use anyhow::{Context, Error, Result, anyhow, bail};
 
 use super::Verbosity;
 
@@ -41,7 +41,7 @@ pub fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 	} else if exit_code == 128 || indicates_repo_identity_mismatch(&output.stderr) {
 		PullOutcome::Fatal
 	} else {
-		PullOutcome::Failed(anyhow::anyhow!("git pull failed with code {exit_code}."))
+		PullOutcome::Failed(anyhow!("git pull failed: {}", failure_reason(&output.stderr, exit_code)))
 	}
 }
 
@@ -52,17 +52,33 @@ pub fn indicates_repo_identity_mismatch(stderr: &[u8]) -> bool {
 	stderr.contains("unrelated histories") || stderr.contains("but no such ref was fetched")
 }
 
-/// Runs a git subcommand, streaming its output to the terminal in verbose mode and suppressing
-/// it otherwise. `action` names the command in error messages (e.g. `"git clone"`).
-pub fn run_git(mut cmd: Command, verbosity: Verbosity, action: &str) -> Result<()> {
-	let status = if verbosity == Verbosity::Verbose {
-		cmd.status()
-	} else {
-		cmd.stdout(Stdio::null()).stderr(Stdio::null()).status()
+/// The most useful part of a failed git command's stderr: its `fatal:`/`error:` lines if it printed
+/// any, otherwise its last line. Progress updates are split on `\r` so they don't get in the way.
+fn failure_reason(stderr: &[u8], exit_code: i32) -> String {
+	let stderr = String::from_utf8_lossy(stderr);
+	let lines: Vec<&str> = stderr.split(['\n', '\r']).map(str::trim).filter(|l| !l.is_empty()).collect();
+	let errors: Vec<&str> =
+		lines.iter().copied().filter(|l| l.starts_with("fatal:") || l.starts_with("error:")).collect();
+	if !errors.is_empty() {
+		return errors.join(" ");
 	}
-	.with_context(|| format!("Could not run '{action}'. Is git installed and on your PATH?"))?;
-	if !status.success() {
-		bail!("{action} failed with code {}.", status.code().unwrap_or(-1));
+	lines.last().map_or_else(|| format!("exit code {exit_code}"), |l| (*l).to_string())
+}
+
+/// Runs a git subcommand, streaming its output to the terminal in verbose mode. Otherwise output is
+/// hidden, but a failure reports what git said. `action` names the command (e.g. `"git clone"`).
+pub fn run_git(mut cmd: Command, verbosity: Verbosity, action: &str) -> Result<()> {
+	let context = || format!("Could not run '{action}'. Is git installed and on your PATH?");
+	if verbosity == Verbosity::Verbose {
+		let status = cmd.status().with_context(context)?;
+		if !status.success() {
+			bail!("{action} failed with exit code {}", status.code().unwrap_or(-1));
+		}
+		return Ok(());
+	}
+	let output = cmd.stdout(Stdio::null()).stderr(Stdio::piped()).output().with_context(context)?;
+	if !output.status.success() {
+		bail!("{action} failed: {}", failure_reason(&output.stderr, output.status.code().unwrap_or(-1)));
 	}
 	Ok(())
 }
@@ -87,6 +103,27 @@ pub fn update_submodules(repo_dir: &Path, verbosity: Verbosity) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn failure_reason_prefers_fatal_and_error_lines() {
+		let stderr =
+			b"Cloning into 'x'...\nremote: Enumerating objects: 5\rReceiving objects: 10%\rReceiving objects: 50%\n\
+			error: RPC failed; curl 92 HTTP/2 stream 0 was not closed cleanly\nfatal: early EOF\n";
+		assert_eq!(
+			failure_reason(stderr, 128),
+			"error: RPC failed; curl 92 HTTP/2 stream 0 was not closed cleanly fatal: early EOF"
+		);
+	}
+
+	#[test]
+	fn failure_reason_falls_back_to_last_line() {
+		assert_eq!(failure_reason(b"Receiving objects: 10%\rsomething went wrong\n", 1), "something went wrong");
+	}
+
+	#[test]
+	fn failure_reason_uses_exit_code_when_silent() {
+		assert_eq!(failure_reason(b"", 128), "exit code 128");
+	}
 
 	#[test]
 	fn identity_mismatch_detects_unrelated_histories() {
