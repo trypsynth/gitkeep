@@ -12,7 +12,7 @@ use anyhow::{Context, Error, Result, bail};
 use chrono::{DateTime, Utc};
 
 use crate::{
-	config::{Config, State, TrackedUser},
+	config::{Config, State, TrackedAccount},
 	forge::{Forge, RemoteRepo, archive_path, split_host},
 	utils::plural,
 };
@@ -73,7 +73,7 @@ pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity
 			if !config.track.iter().any(|u| u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)) {
 				bail!("'{user}' is not tracked yet. Use 'gitkeep add https://{user}' to start tracking it.");
 			}
-		} else if config.add_user(user, false, false, None) {
+		} else if config.add_account(None, user, false, false, None) {
 			updated = true;
 		}
 	}
@@ -86,7 +86,7 @@ pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity
              or run 'gitkeep login' to authenticate and auto-add your account."
 		);
 	}
-	let to_sync: Vec<TrackedUser> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
+	let to_sync: Vec<TrackedAccount> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
 	if to_sync.is_empty() && config.pinned.is_empty() {
 		println!("All tracked users are frozen. Use 'gitkeep sync <username>' to sync specific accounts.");
 		return Ok(());
@@ -99,7 +99,7 @@ pub async fn run(extra_users: &[String], opts: SyncOptions, verbosity: Verbosity
 
 pub async fn run_for(targets: &[String], opts: SyncOptions) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
-	let to_sync: Vec<TrackedUser> =
+	let to_sync: Vec<TrackedAccount> =
 		config.track.iter().filter(|u| targets.iter().any(|t| matches_target(u, t))).cloned().collect();
 	if to_sync.is_empty() {
 		println!("No matching users found to sync.");
@@ -119,7 +119,7 @@ pub async fn run_pinned(repos: &[String]) -> Result<()> {
 
 async fn sync_all(
 	config: &mut Config,
-	users: &[TrackedUser],
+	users: &[TrackedAccount],
 	pinned: &[String],
 	opts: SyncOptions,
 	verbosity: Verbosity,
@@ -222,7 +222,7 @@ fn build_normal_detail(totals: &Totals) -> Option<String> {
 
 /// True when a `sync <target>` argument names this tracked account: a plain name matches
 /// a GitHub account, a `host/path` name matches an account on that host.
-fn matches_target(user: &TrackedUser, target: &str) -> bool {
+fn matches_target(user: &TrackedAccount, target: &str) -> bool {
 	if let Some((host, path)) = split_host(target) {
 		user.host.as_deref() == Some(host) && user.name.eq_ignore_ascii_case(path)
 	} else {
@@ -233,7 +233,7 @@ fn matches_target(user: &TrackedUser, target: &str) -> bool {
 /// Syncs every repo of one tracked account. Follows account renames (by stable id, where the forge
 /// has one), moving the local archive and updating the config. Returns `true` if the config changed.
 async fn sync_one(
-	user: &TrackedUser,
+	user: &TrackedAccount,
 	forge: &Forge,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
@@ -664,10 +664,10 @@ mod tests {
 
 	#[test]
 	fn matches_target_plain_name_matches_github_only() {
-		let github = TrackedUser::with_options("alice", false, false);
-		let gitlab = TrackedUser {
+		let github = TrackedAccount::with_options("alice", false, false);
+		let gitlab = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("alice", false, false)
+			..TrackedAccount::with_options("alice", false, false)
 		};
 		assert!(matches_target(&github, "Alice"));
 		assert!(!matches_target(&gitlab, "Alice"));
@@ -675,9 +675,9 @@ mod tests {
 
 	#[test]
 	fn matches_target_host_qualified_matches_gitlab_entry() {
-		let gitlab = TrackedUser {
+		let gitlab = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp/sub", false, false)
+			..TrackedAccount::with_options("grp/sub", false, false)
 		};
 		assert!(matches_target(&gitlab, "gitlab.example.com/grp/sub"));
 		assert!(!matches_target(&gitlab, "gitlab.other.com/grp/sub"));

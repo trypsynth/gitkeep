@@ -8,7 +8,7 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-	config::{Config, HostConfig, PinnedRepo, TrackedUser},
+	config::{Config, HostConfig, PinnedRepo, TrackedAccount},
 	forge::{self, Forge, Resolved, Target, archive_path},
 	utils::{confirm, plural},
 };
@@ -53,8 +53,8 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 	// skips the now-redundant pin.
 	for (host, item) in &resolved {
 		if let Resolved::Account(name) = item {
-			changed |= config.add_user_on(host.as_deref(), name, forks, frozen, submodules);
-			let tracked = TrackedUser { host: host.clone(), ..TrackedUser::with_options(name, forks, frozen) };
+			changed |= config.add_account(host.as_deref(), name, forks, frozen, submodules);
+			let tracked = TrackedAccount { host: host.clone(), ..TrackedAccount::with_options(name, forks, frozen) };
 			for pin in config.remove_pins_covered(&tracked) {
 				println!("{pin} removed (now covered by {}).", tracked.display_name());
 				changed = true;
@@ -65,7 +65,7 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 	for (_, item) in resolved {
 		let Resolved::Repo(repo) = item else { continue };
 		let key = repo.full_name;
-		if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).map(TrackedUser::display_name) {
+		if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).map(TrackedAccount::display_name) {
 			if let Some(restored) = config.include_repo(&key) {
 				println!("Now tracking {restored} again.");
 				changed = true;
@@ -119,7 +119,7 @@ async fn remove_one(
 	let host = target.host.as_deref();
 	let account = config.track.iter().find(|u| u.host.as_deref() == host && u.name.eq_ignore_ascii_case(&target.path));
 	if let Some(account) = account.cloned() {
-		config.remove_user(host, &account.name);
+		config.remove_account(host, &account.name);
 		config.remove_exclusions_covered(&account);
 		let name = account.display_name();
 		let dir = archive_path(archive_root, &name);
@@ -162,7 +162,8 @@ fn remove_untracked(
 	delete_dir: bool,
 	yes: bool,
 ) -> Result<bool> {
-	let as_account = TrackedUser { host: target.host.clone(), ..TrackedUser::with_options(&target.path, false, false) };
+	let as_account =
+		TrackedAccount { host: target.host.clone(), ..TrackedAccount::with_options(&target.path, false, false) };
 	let mut matching: Vec<String> =
 		config.pinned.iter().filter(|p| as_account.covers(&p.full_name)).map(|p| p.full_name.clone()).collect();
 	matching.sort();
@@ -210,7 +211,7 @@ fn remove_untracked(
 async fn exclude_repo(
 	config: &mut Config,
 	archive_root: &Path,
-	owner: &TrackedUser,
+	owner: &TrackedAccount,
 	target: &Target,
 	delete: bool,
 ) -> Result<bool> {
@@ -367,8 +368,11 @@ mod tests {
 		dir
 	}
 
-	fn gitlab_user(name: &str) -> TrackedUser {
-		TrackedUser { host: Some("gitlab.example.com".to_string()), ..TrackedUser::with_options(name, false, false) }
+	fn gitlab_account(name: &str) -> TrackedAccount {
+		TrackedAccount {
+			host: Some("gitlab.example.com".to_string()),
+			..TrackedAccount::with_options(name, false, false)
+		}
 	}
 
 	async fn remove(config: &mut Config, root: &Path, target: &str, delete_dir: bool) -> bool {
@@ -380,7 +384,7 @@ mod tests {
 		let root = temp_dir();
 		fs::create_dir_all(root.join("Alice").join("BigRepo")).unwrap();
 		let mut config = Config::default();
-		config.add_user("Alice", false, false, None);
+		config.add_account(None, "Alice", false, false, None);
 		assert!(remove(&mut config, &root, "alice/bigrepo", true).await);
 		assert!(config.excluded.contains("Alice/BigRepo"));
 		assert_eq!(config.track.len(), 1, "the account itself stays tracked");
@@ -392,7 +396,7 @@ mod tests {
 	async fn remove_already_excluded_repo_is_unchanged() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		config.exclude_repo("alice/big");
 		assert!(!remove(&mut config, &root, "alice/big", true).await);
 		assert_eq!(config.excluded.len(), 1);
@@ -405,7 +409,7 @@ mod tests {
 		let project_dir = root.join("gitlab.example.com").join("grp").join("sub").join("big");
 		fs::create_dir_all(&project_dir).unwrap();
 		let mut config = Config::default();
-		config.track.push(gitlab_user("grp"));
+		config.track.push(gitlab_account("grp"));
 		assert!(remove(&mut config, &root, "https://gitlab.example.com/grp/sub/big", true).await);
 		assert!(config.is_excluded("gitlab.example.com/grp/sub/big"));
 		assert_eq!(config.track.len(), 1, "the group itself stays tracked");
@@ -417,7 +421,7 @@ mod tests {
 	async fn remove_gitlab_group_clears_its_exclusions_only() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		config.track.push(gitlab_user("grp"));
+		config.track.push(gitlab_account("grp"));
 		config.exclude_repo("gitlab.example.com/grp/big");
 		config.exclude_repo("gitlab.example.com/other/big");
 		config.exclude_repo("alice/big");
@@ -433,8 +437,8 @@ mod tests {
 	async fn remove_github_account_leaves_same_name_on_other_hosts() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
-		config.track.push(gitlab_user("alice"));
+		config.add_account(None, "alice", false, false, None);
+		config.track.push(gitlab_account("alice"));
 		assert!(remove(&mut config, &root, "alice", false).await);
 		assert_eq!(config.track.len(), 1);
 		assert_eq!(config.track[0].host.as_deref(), Some("gitlab.example.com"));
@@ -524,7 +528,7 @@ mod tests {
 	#[test]
 	fn list_shows_tracked_users() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("alice"), "got: {out}");
 	}
@@ -532,7 +536,7 @@ mod tests {
 	#[test]
 	fn list_shows_forks_tag() {
 		let mut config = Config::default();
-		config.add_user("alice", true, false, None);
+		config.add_account(None, "alice", true, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("forks"), "got: {out}");
 	}
@@ -540,7 +544,7 @@ mod tests {
 	#[test]
 	fn list_shows_frozen_tag() {
 		let mut config = Config::default();
-		config.add_user("alice", false, true, None);
+		config.add_account(None, "alice", false, true, None);
 		let out = format_list(&config);
 		assert!(out.contains("frozen"), "got: {out}");
 	}
@@ -548,7 +552,7 @@ mod tests {
 	#[test]
 	fn list_omits_removed_section_when_none() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		let out = format_list(&config);
 		assert!(!out.to_lowercase().contains("removed"), "got: {out}");
 	}
@@ -556,7 +560,7 @@ mod tests {
 	#[test]
 	fn list_shows_removed_section_when_present() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		config.exclude_repo("alice/noisy");
 		let out = format_list(&config);
 		assert!(out.contains("alice/noisy"), "got: {out}");
@@ -566,7 +570,7 @@ mod tests {
 	#[test]
 	fn list_removed_repos_are_sorted() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		config.exclude_repo("alice/zzz");
 		config.exclude_repo("alice/aaa");
 		let out = format_list(&config);
@@ -587,7 +591,7 @@ mod tests {
 	#[test]
 	fn list_shows_submodules_tag_when_enabled() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, Some(true));
+		config.add_account(None, "alice", false, false, Some(true));
 		let out = format_list(&config);
 		assert!(out.contains("submodules"), "got: {out}");
 	}
@@ -595,7 +599,7 @@ mod tests {
 	#[test]
 	fn list_shows_no_submodules_tag_when_explicitly_disabled() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, Some(false));
+		config.add_account(None, "alice", false, false, Some(false));
 		let out = format_list(&config);
 		assert!(out.contains("no-submodules"), "got: {out}");
 	}
@@ -603,7 +607,7 @@ mod tests {
 	#[test]
 	fn list_omits_submodules_tag_when_unset() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		let out = format_list(&config);
 		assert!(!out.contains("submodules"), "got: {out}");
 	}
@@ -631,7 +635,7 @@ mod tests {
 	#[test]
 	fn list_omits_pinned_section_when_none() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		let out = format_list(&config);
 		assert!(!out.contains("Repos ("), "got: {out}");
 	}
@@ -639,19 +643,19 @@ mod tests {
 	#[test]
 	fn list_shows_host_qualified_gitlab_entries() {
 		let mut config = Config::default();
-		config.add_user_on(Some("gitlab.example.com"), "some-group", false, false, None);
+		config.add_account(Some("gitlab.example.com"), "some-group", false, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("gitlab.example.com/some-group"), "got: {out}");
 	}
 
 	#[test]
-	fn add_user_removes_pins_for_that_user() {
+	fn add_account_removes_pins_for_that_user() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("alice/foo", None, None);
 		config.pin_repo_with_options("alice/bar", None, None);
 		config.pin_repo_with_options("bob/baz", None, None);
-		config.add_user("alice", false, false, None);
-		let pins_removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
+		config.add_account(None, "alice", false, false, None);
+		let pins_removed = config.remove_pins_covered(&TrackedAccount::with_options("alice", false, false));
 		assert_eq!(pins_removed.len(), 2);
 		assert!(config.is_pinned("bob/baz"));
 	}

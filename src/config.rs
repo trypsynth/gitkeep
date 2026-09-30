@@ -25,7 +25,7 @@ pub struct Config {
 	#[serde(default)]
 	pub use_ssh: bool,
 	/// Global default for whether to recurse into submodules on clone/pull. Overridden
-	/// per-account or per-pin by `TrackedUser.submodules` / `PinnedRepo.submodules`.
+	/// per-account or per-pin by `TrackedAccount.submodules` / `PinnedRepo.submodules`.
 	#[serde(default)]
 	pub submodules: bool,
 	/// Global default for whether `add` should skip cloning immediately after adding.
@@ -33,7 +33,7 @@ pub struct Config {
 	#[serde(default)]
 	pub no_sync: bool,
 	#[serde(default)]
-	pub track: Vec<TrackedUser>,
+	pub track: Vec<TrackedAccount>,
 	/// Self-hosted forges, keyed by host (e.g. "gitlab.com"). github.com is never listed; it's the
 	/// default and uses `token`.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -58,7 +58,7 @@ pub struct HostConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackedUser {
+pub struct TrackedAccount {
 	pub name: String,
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub forks: bool,
@@ -76,7 +76,7 @@ pub struct TrackedUser {
 	pub host: Option<String>,
 }
 
-impl TrackedUser {
+impl TrackedAccount {
 	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
 		Self { name: name.into(), forks, frozen, id: None, submodules: None, host: None }
 	}
@@ -220,11 +220,7 @@ impl Config {
 		}
 	}
 
-	pub fn add_user(&mut self, user: &str, forks: bool, frozen: bool, submodules: Option<bool>) -> bool {
-		self.add_user_on(None, user, forks, frozen, submodules)
-	}
-
-	pub fn add_user_on(
+	pub fn add_account(
 		&mut self,
 		host: Option<&str>,
 		user: &str,
@@ -270,7 +266,7 @@ impl Config {
 			}
 			local_changed || canonical_changed
 		} else {
-			let mut entry = TrackedUser::with_options(user, forks, frozen);
+			let mut entry = TrackedAccount::with_options(user, forks, frozen);
 			entry.submodules = submodules;
 			entry.host = host.map(ToString::to_string);
 			println!(
@@ -283,13 +279,13 @@ impl Config {
 			true
 		};
 		if changed {
-			self.sort_users();
+			self.sort_accounts();
 		}
 		changed
 	}
 
 	/// Stops tracking the account `user` on `host` (`None` for GitHub).
-	pub fn remove_user(&mut self, host: Option<&str>, user: &str) -> bool {
+	pub fn remove_account(&mut self, host: Option<&str>, user: &str) -> bool {
 		let before = self.track.len();
 		self.track.retain(|u| !(u.host.as_deref() == host && u.name.eq_ignore_ascii_case(user)));
 		let display = host.map_or_else(|| user.to_string(), |h| format!("{h}/{user}"));
@@ -302,7 +298,7 @@ impl Config {
 		}
 	}
 
-	pub fn sort_users(&mut self) {
+	pub fn sort_accounts(&mut self) {
 		self.track.sort_by_key(|a| a.name.to_lowercase());
 	}
 
@@ -327,7 +323,7 @@ impl Config {
 	}
 
 	/// Drops every exclusion that `tracked`'s sync would include, e.g. once that account is removed.
-	pub fn remove_exclusions_covered(&mut self, tracked: &TrackedUser) {
+	pub fn remove_exclusions_covered(&mut self, tracked: &TrackedAccount) {
 		self.excluded.retain(|r| !tracked.covers(r));
 	}
 
@@ -375,7 +371,7 @@ impl Config {
 	}
 
 	/// Removes all pinned repos already covered by `tracked` and returns their full names.
-	pub fn remove_pins_covered(&mut self, tracked: &TrackedUser) -> Vec<String> {
+	pub fn remove_pins_covered(&mut self, tracked: &TrackedAccount) -> Vec<String> {
 		let to_remove: Vec<String> =
 			self.pinned.iter().filter(|p| tracked.covers(&p.full_name)).map(|p| p.full_name.clone()).collect();
 		self.pinned.retain(|p| !to_remove.contains(&p.full_name));
@@ -493,7 +489,7 @@ mod tests {
 		config.exclude_repo("Alice/a");
 		config.exclude_repo("alice/b");
 		config.exclude_repo("bob/c");
-		config.remove_exclusions_covered(&TrackedUser::with_options("alice", false, false));
+		config.remove_exclusions_covered(&TrackedAccount::with_options("alice", false, false));
 		assert!(!config.is_excluded("alice/a"));
 		assert!(!config.is_excluded("alice/b"));
 		assert!(config.is_excluded("bob/c"));
@@ -593,46 +589,46 @@ mod tests {
 
 	#[test]
 	fn tracked_user_submodules_defaults_to_none_for_legacy_toml() {
-		let user: TrackedUser = from_str(r#"name = "alice""#).unwrap();
+		let user: TrackedAccount = from_str(r#"name = "alice""#).unwrap();
 		assert_eq!(user.submodules, None);
 	}
 
 	#[test]
 	fn tracked_user_submodules_round_trips() {
-		let user = TrackedUser { submodules: Some(true), ..TrackedUser::with_options("alice", false, false) };
+		let user = TrackedAccount { submodules: Some(true), ..TrackedAccount::with_options("alice", false, false) };
 		let raw = to_string(&user).unwrap();
-		let back: TrackedUser = from_str(&raw).unwrap();
+		let back: TrackedAccount = from_str(&raw).unwrap();
 		assert_eq!(back.submodules, Some(true));
 	}
 
 	#[test]
-	fn add_user_sets_submodules_override_on_new_entry() {
+	fn add_account_sets_submodules_override_on_new_entry() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, Some(true));
+		config.add_account(None, "alice", false, false, Some(true));
 		assert_eq!(config.track[0].submodules, Some(true));
 	}
 
 	#[test]
-	fn add_user_leaves_submodules_unset_when_not_specified() {
+	fn add_account_leaves_submodules_unset_when_not_specified() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		assert_eq!(config.track[0].submodules, None);
 	}
 
 	#[test]
-	fn add_user_updates_submodules_override_on_existing_entry() {
+	fn add_account_updates_submodules_override_on_existing_entry() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
-		let changed = config.add_user("alice", false, false, Some(false));
+		config.add_account(None, "alice", false, false, None);
+		let changed = config.add_account(None, "alice", false, false, Some(false));
 		assert!(changed);
 		assert_eq!(config.track[0].submodules, Some(false));
 	}
 
 	#[test]
-	fn add_user_no_change_when_submodules_override_already_set() {
+	fn add_account_no_change_when_submodules_override_already_set() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, Some(true));
-		let changed = config.add_user("alice", false, false, Some(true));
+		config.add_account(None, "alice", false, false, Some(true));
+		let changed = config.add_account(None, "alice", false, false, Some(true));
 		assert!(!changed);
 	}
 
@@ -707,7 +703,7 @@ mod tests {
 		config.pin_repo_with_options("alice/foo", None, None);
 		config.pin_repo_with_options("alice/bar", None, None);
 		config.pin_repo_with_options("bob/baz", None, None);
-		let removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
+		let removed = config.remove_pins_covered(&TrackedAccount::with_options("alice", false, false));
 		assert_eq!(removed.len(), 2);
 		assert!(!config.is_pinned("alice/foo"));
 		assert!(!config.is_pinned("alice/bar"));
@@ -718,7 +714,7 @@ mod tests {
 	fn config_remove_pins_covered_case_insensitive() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("Alice/foo", None, None);
-		let removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
+		let removed = config.remove_pins_covered(&TrackedAccount::with_options("alice", false, false));
 		assert_eq!(removed.len(), 1);
 		assert!(!config.is_pinned("Alice/foo"));
 	}
@@ -727,27 +723,27 @@ mod tests {
 	fn config_remove_pins_covered_returns_empty_when_none() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("bob/baz", None, None);
-		let removed = config.remove_pins_covered(&TrackedUser::with_options("alice", false, false));
+		let removed = config.remove_pins_covered(&TrackedAccount::with_options("alice", false, false));
 		assert!(removed.is_empty());
 	}
 
 	#[test]
 	fn tracked_user_id_defaults_to_none_when_deserializing_legacy_toml() {
-		let user: TrackedUser = from_str(r#"name = "alice""#).unwrap();
+		let user: TrackedAccount = from_str(r#"name = "alice""#).unwrap();
 		assert_eq!(user.id, None);
 	}
 
 	#[test]
 	fn tracked_user_id_round_trips() {
-		let user = TrackedUser { id: Some(42), ..TrackedUser::with_options("alice", false, false) };
+		let user = TrackedAccount { id: Some(42), ..TrackedAccount::with_options("alice", false, false) };
 		let raw = to_string(&user).unwrap();
-		let back: TrackedUser = from_str(&raw).unwrap();
+		let back: TrackedAccount = from_str(&raw).unwrap();
 		assert_eq!(back.id, Some(42));
 	}
 
 	#[test]
 	fn tracked_user_id_omitted_from_toml_when_none() {
-		let user = TrackedUser::with_options("alice", false, false);
+		let user = TrackedAccount::with_options("alice", false, false);
 		let raw = to_string(&user).unwrap();
 		assert!(!raw.contains("id"), "got: {raw}");
 	}
@@ -785,25 +781,25 @@ mod tests {
 
 	#[test]
 	fn tracked_user_host_defaults_to_none_for_legacy_toml() {
-		let user: TrackedUser = from_str(r#"name = "alice""#).unwrap();
+		let user: TrackedAccount = from_str(r#"name = "alice""#).unwrap();
 		assert_eq!(user.host, None);
 	}
 
 	#[test]
 	fn tracked_user_host_round_trips() {
-		let user = TrackedUser {
+		let user = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp", false, false)
+			..TrackedAccount::with_options("grp", false, false)
 		};
 		let raw = to_string(&user).unwrap();
-		let back: TrackedUser = from_str(&raw).unwrap();
+		let back: TrackedAccount = from_str(&raw).unwrap();
 		assert_eq!(back.host.as_deref(), Some("gitlab.example.com"));
 	}
 
 	#[test]
 	fn config_without_gitlab_omits_new_fields_on_save() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
+		config.add_account(None, "alice", false, false, None);
 		let raw = to_string(&config).unwrap();
 		assert!(!raw.contains("gitlab_tokens"), "got: {raw}");
 		assert!(!raw.contains("host"), "got: {raw}");
@@ -830,7 +826,7 @@ mod tests {
 	#[test]
 	fn legacy_host_qualified_entries_are_assumed_gitlab() {
 		let mut config = Config::default();
-		config.add_user_on(Some("git.example.org"), "grp", false, false, None);
+		config.add_account(Some("git.example.org"), "grp", false, false, None);
 		config.pin_repo_with_options("code.example.net/team/proj", None, None);
 		config.migrate_legacy_hosts();
 		assert_eq!(config.hosts["git.example.org"].kind, ForgeKind::GitLab);
@@ -844,7 +840,7 @@ mod tests {
 		config
 			.hosts
 			.insert("git.example.org".to_string(), HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()) });
-		config.add_user_on(Some("git.example.org"), "grp", false, false, None);
+		config.add_account(Some("git.example.org"), "grp", false, false, None);
 		config.migrate_legacy_hosts();
 		assert_eq!(config.hosts["git.example.org"].token.as_deref(), Some("t"));
 	}
@@ -857,52 +853,52 @@ mod tests {
 	}
 
 	#[test]
-	fn add_user_on_tracks_same_name_on_different_hosts_separately() {
+	fn add_account_on_tracks_same_name_on_different_hosts_separately() {
 		let mut config = Config::default();
-		config.add_user("alice", false, false, None);
-		assert!(config.add_user_on(Some("gitlab.example.com"), "alice", false, false, None));
+		config.add_account(None, "alice", false, false, None);
+		assert!(config.add_account(Some("gitlab.example.com"), "alice", false, false, None));
 		assert_eq!(config.track.len(), 2);
 	}
 
 	#[test]
-	fn add_user_on_is_idempotent_per_host() {
+	fn add_account_on_is_idempotent_per_host() {
 		let mut config = Config::default();
-		config.add_user_on(Some("gitlab.example.com"), "alice", false, false, None);
-		assert!(!config.add_user_on(Some("gitlab.example.com"), "alice", false, false, None));
+		config.add_account(Some("gitlab.example.com"), "alice", false, false, None);
+		assert!(!config.add_account(Some("gitlab.example.com"), "alice", false, false, None));
 	}
 
 	#[test]
 	fn display_name_includes_host_for_gitlab() {
-		let user = TrackedUser {
+		let user = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp", false, false)
+			..TrackedAccount::with_options("grp", false, false)
 		};
 		assert_eq!(user.display_name(), "gitlab.example.com/grp");
 	}
 
 	#[test]
 	fn covers_github_pin_by_owner() {
-		let user = TrackedUser::with_options("Alice", false, false);
+		let user = TrackedAccount::with_options("Alice", false, false);
 		assert!(user.covers("alice/repo"));
 		assert!(!user.covers("bob/repo"));
 	}
 
 	#[test]
 	fn covers_rejects_cross_provider() {
-		let github = TrackedUser::with_options("alice", false, false);
+		let github = TrackedAccount::with_options("alice", false, false);
 		assert!(!github.covers("gitlab.example.com/alice/repo"));
-		let gitlab = TrackedUser {
+		let gitlab = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("alice", false, false)
+			..TrackedAccount::with_options("alice", false, false)
 		};
 		assert!(!gitlab.covers("alice/repo"));
 	}
 
 	#[test]
 	fn covers_gitlab_pin_including_subgroups() {
-		let user = TrackedUser {
+		let user = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp", false, false)
+			..TrackedAccount::with_options("grp", false, false)
 		};
 		assert!(user.covers("gitlab.example.com/grp/proj"));
 		assert!(user.covers("gitlab.example.com/grp/sub/proj"));
@@ -912,9 +908,9 @@ mod tests {
 
 	#[test]
 	fn covers_gitlab_does_not_match_sibling_prefix() {
-		let user = TrackedUser {
+		let user = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp", false, false)
+			..TrackedAccount::with_options("grp", false, false)
 		};
 		assert!(!user.covers("gitlab.example.com/grpx/proj"));
 	}
@@ -924,9 +920,9 @@ mod tests {
 		let mut config = Config::default();
 		config.pin_repo_with_options("gitlab.example.com/grp/proj", None, None);
 		config.pin_repo_with_options("gitlab.example.com/other/proj", None, None);
-		let tracked = TrackedUser {
+		let tracked = TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
-			..TrackedUser::with_options("grp", false, false)
+			..TrackedAccount::with_options("grp", false, false)
 		};
 		let removed = config.remove_pins_covered(&tracked);
 		assert_eq!(removed, vec!["gitlab.example.com/grp/proj".to_string()]);

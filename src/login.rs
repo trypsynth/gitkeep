@@ -32,7 +32,7 @@ pub async fn run() -> Result<()> {
 	config.token = Some(token);
 	let already_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(&user.login));
 	if already_tracked || confirm(&format!("Track your own account ({})?", user.login), true)? {
-		config.add_user(&user.login, false, false, None);
+		config.add_account(None, &user.login, false, false, None);
 	}
 	config.save()?;
 	println!("Token saved to {}.", Config::path()?.display());
