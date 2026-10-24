@@ -87,5 +87,8 @@ pub enum Commands {
 		/// Show raw git output
 		#[arg(short = 'v', long)]
 		verbose: bool,
+		/// How many repos to clone or pull at once (default: one per CPU thread, 4 to 16, or `jobs` in the config)
+		#[arg(short, long, value_name = "N")]
+		jobs: Option<usize>,
 	},
 }

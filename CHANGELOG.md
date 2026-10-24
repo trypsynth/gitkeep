@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `gitkeep size` now shows just the total by default. Pass `--breakdown` to also list each account's size, including each account on other forges instead of one line per host
+- Repos are now cloned and pulled several at a time (one per CPU thread, between 4 and 16), which makes big syncs several times faster. Change it with `gitkeep sync -j <N>` or `jobs = <N>` in the config
 
 ## 0.3.1
 

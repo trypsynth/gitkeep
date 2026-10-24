@@ -79,7 +79,10 @@ Sync every tracked account that isn't frozen, plus individually tracked repos. P
 | `-p, --pull-only` | Only pull existing repos; skip checking for new ones |
 | `-n, --new-only` | Only clone new repos; skip pulling existing ones |
 | `-q, --quiet` | Suppress all output except errors and the final summary |
-| `-v, --verbose` | Show raw git output and per-repo detail |
+| `-v, --verbose` | Show raw git output and per-repo detail (runs one repo at a time) |
+| `-j, --jobs <N>` | How many repos to clone or pull at once (default: one per CPU thread, between 4 and 16) |
+
+By default, repos are cloned and pulled several at a time: one per CPU thread, but at least 4 and at most 16. Set `jobs = <N>` in `~/.gitkeep.toml` to change that for every sync, including the one `add` runs. Use `jobs = 1` if git needs to prompt you for credentials or a key passphrase, since several prompts at once would collide.
 
 A sync that fails to pull an existing repo because it no longer matches what's on GitHub (e.g. the `owner/name` was deleted and recreated as a different repo) automatically deletes the stale local clone and re-clones it.
 
