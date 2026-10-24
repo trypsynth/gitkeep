@@ -1,10 +1,14 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+	collections::{HashMap, hash_map::Entry},
+	io::{self, IsTerminal as _},
+};
 
 use anyhow::Result;
 
 use crate::{
 	config::{Config, HostConfig, TrackedAccount},
 	forge::{self, Forge, Resolved, Target},
+	utils::confirm,
 };
 
 /// What `add` recorded, by key, so the caller can sync it right away.
@@ -30,7 +34,13 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 			&& !config.hosts.contains_key(host)
 		{
 			let kind = forge::detect(host).await?;
-			config.hosts.insert(host.clone(), HostConfig { kind, token: None });
+			// Scripts get the global setting; only a person at a terminal is asked.
+			let use_ssh = if io::stdin().is_terminal() {
+				Some(confirm(&format!("Use SSH clone URLs for {host}?"), config.use_ssh)?)
+			} else {
+				None
+			};
+			config.hosts.insert(host.clone(), HostConfig { kind, token: None, use_ssh });
 			changed = true;
 		}
 		let forge = match forges.entry(target.host.clone()) {

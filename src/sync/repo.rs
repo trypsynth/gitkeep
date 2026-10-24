@@ -33,7 +33,7 @@ pub fn sync_repo_list(
 			sync_state.totals.excluded += 1;
 			continue;
 		}
-		let Some(url) = repo.clone_url(config.use_ssh) else {
+		let Some(url) = repo.clone_url(config.use_ssh_for(full_name)) else {
 			sync_state.totals.excluded += 1;
 			continue;
 		};

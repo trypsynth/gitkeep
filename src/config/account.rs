@@ -13,6 +13,10 @@ pub struct HostConfig {
 	pub kind: ForgeKind,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub token: Option<String>,
+	/// Overrides the global `use_ssh` for this host, e.g. when there's no SSH access to it. `None`
+	/// inherits it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub use_ssh: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
