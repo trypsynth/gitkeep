@@ -73,8 +73,13 @@ fn plan_jobs(
 			sync_state.totals.excluded += 1;
 			continue;
 		}
-		let Some(url) = repo.clone_url(config.use_ssh_for(full_name)) else {
-			sync_state.totals.excluded += 1;
+		let use_ssh = config.use_ssh_for(full_name);
+		let Some(url) = repo.clone_url(use_ssh) else {
+			let (missing, other) = if use_ssh { ("SSH", "HTTPS") } else { ("HTTPS", "SSH") };
+			eprintln!(
+				"  Could not sync {full_name}: the forge gave no {missing} clone URL for it. Setting use_ssh in the config to use {other} instead may work."
+			);
+			sync_state.totals.failed += 1;
 			continue;
 		};
 		let mut repo_dir = ctx.archive_dir.to_path_buf();
@@ -235,7 +240,31 @@ mod tests {
 
 	use chrono::Duration;
 
-	use super::*;
+	use super::{super::SyncOptions, *};
+	use crate::{config::State, sync::summary::Totals};
+
+	#[test]
+	fn plan_jobs_counts_a_repo_without_the_chosen_clone_url_as_failed() {
+		let mut config = Config::default();
+		config.use_ssh = true;
+		let repo = RemoteRepo {
+			full_name: "alice/repo".into(),
+			rel_dir: "alice/repo".into(),
+			id: 1,
+			pushed_at: None,
+			fork: false,
+			clone_url: Some("https://example.com/alice/repo.git".into()),
+			ssh_url: None,
+		};
+		let root = env::temp_dir().join(format!("gitkeep-plan-test-{}", process::id()));
+		let ctx =
+			SyncContext { archive_dir: &root, opts: SyncOptions::default(), verbosity: Verbosity::Quiet, jobs: 1 };
+		let mut state = State::default();
+		let mut totals = Totals::default();
+		let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
+		assert!(plan_jobs(vec![repo], false, ctx, &config, &mut sync_state).is_empty());
+		assert_eq!((totals.failed, totals.excluded), (1, 0));
+	}
 
 	#[test]
 	fn run_jobs_returns_outcomes_in_job_order_across_workers() {
