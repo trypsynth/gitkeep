@@ -75,7 +75,10 @@ impl Config {
 	/// any host-qualified account or pin was on GitLab. Record those hosts explicitly.
 	fn migrate_legacy_hosts(&mut self) {
 		for (host, token) in mem::take(&mut self.gitlab_tokens) {
-			self.hosts.entry(host).or_insert(HostConfig { kind: ForgeKind::GitLab, token: None }).token = Some(token);
+			self.hosts
+				.entry(host)
+				.or_insert(HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None })
+				.token = Some(token);
 		}
 		let used = self
 			.track
@@ -84,8 +87,13 @@ impl Config {
 			.chain(self.pinned.iter().filter_map(|p| split_host(&p.full_name).map(|(h, _)| h.to_string())))
 			.collect::<Vec<_>>();
 		for host in used {
-			self.hosts.entry(host).or_insert(HostConfig { kind: ForgeKind::GitLab, token: None });
+			self.hosts.entry(host).or_insert(HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None });
 		}
+	}
+
+	/// Whether to clone `full_name` over SSH: its host's setting if it has one, else the global one.
+	pub fn use_ssh_for(&self, full_name: &str) -> bool {
+		split_host(full_name).and_then(|(host, _)| self.hosts.get(host)?.use_ssh).unwrap_or(self.use_ssh)
 	}
 
 	pub fn save(&self) -> Result<()> {
@@ -612,12 +620,35 @@ mod tests {
 	#[test]
 	fn migration_keeps_existing_host_kinds() {
 		let mut config = Config::default();
-		config
-			.hosts
-			.insert("git.example.org".to_string(), HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()) });
+		config.hosts.insert(
+			"git.example.org".to_string(),
+			HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()), use_ssh: None },
+		);
 		config.add_account(Some("git.example.org"), "grp", false, false, None);
 		config.migrate_legacy_hosts();
 		assert_eq!(config.hosts["git.example.org"].token.as_deref(), Some("t"));
+	}
+
+	#[test]
+	fn use_ssh_for_prefers_host_setting_over_global() {
+		let mut config = Config { use_ssh: true, ..Config::default() };
+		config.hosts.insert(
+			"gitea.example.com".to_string(),
+			HostConfig { kind: ForgeKind::Forgejo, token: None, use_ssh: Some(false) },
+		);
+		config.hosts.insert(
+			"gitlab.example.com".to_string(),
+			HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None },
+		);
+		assert!(!config.use_ssh_for("gitea.example.com/alice/repo"));
+		assert!(config.use_ssh_for("gitlab.example.com/grp/proj"));
+		assert!(config.use_ssh_for("alice/repo"));
+	}
+
+	#[test]
+	fn host_use_ssh_omitted_from_toml_when_none() {
+		let host = HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None };
+		assert!(!to_string(&host).unwrap().contains("use_ssh"));
 	}
 
 	#[test]
