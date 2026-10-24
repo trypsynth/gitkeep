@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 		Commands::Remove { users, delete, yes } => track::remove(&utils::expand_targets(users)?, delete, yes).await,
 		Commands::List => track::list(),
 		Commands::Size { format, breakdown } => size::run(format, breakdown),
-		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {
+		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose, jobs } => {
 			let verbosity = if quiet {
 				sync::Verbosity::Quiet
 			} else if verbose {
@@ -77,7 +77,8 @@ async fn main() -> Result<()> {
 			} else {
 				sync::Verbosity::Normal
 			};
-			let opts = sync::SyncOptions { force_forks: forks, force_submodules: submodules, pull_only, new_only };
+			let opts =
+				sync::SyncOptions { force_forks: forks, force_submodules: submodules, pull_only, new_only, jobs };
 			sync::run(&utils::expand_targets(users)?, opts, verbosity).await
 		}
 	}

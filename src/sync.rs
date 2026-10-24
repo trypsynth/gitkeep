@@ -37,7 +37,12 @@ pub struct SyncOptions {
 	pub force_submodules: bool,
 	pub pull_only: bool,
 	pub new_only: bool,
+	/// How many repos to clone or pull at once, overriding the config.
+	pub jobs: Option<usize>,
 }
+
+/// How many repos to clone or pull at once when neither `--jobs` nor the config says.
+const DEFAULT_JOBS: usize = 8;
 
 /// Read-only settings shared by every repo synced during a single run.
 #[derive(Clone, Copy)]
@@ -45,6 +50,8 @@ struct SyncContext<'a> {
 	archive_dir: &'a Path,
 	opts: SyncOptions,
 	verbosity: Verbosity,
+	/// How many git commands to run at once.
+	jobs: usize,
 }
 
 /// Accounts and pinned repos synced with the same options.
@@ -164,7 +171,13 @@ async fn sync_all(config: &mut Config, batches: &[Batch<'_>], verbosity: Verbosi
 	let mut seen = HashSet::new();
 	let mut config_changed = false;
 	for batch in batches {
-		let ctx = SyncContext { archive_dir: &archive_dir, opts: batch.opts, verbosity };
+		// Verbose mode streams git's own output, which would interleave unreadably in parallel.
+		let jobs = if verbosity == Verbosity::Verbose {
+			1
+		} else {
+			batch.opts.jobs.or(config.jobs).unwrap_or(DEFAULT_JOBS).max(1)
+		};
+		let ctx = SyncContext { archive_dir: &archive_dir, opts: batch.opts, verbosity, jobs };
 		for user in batch.users {
 			if !seen.insert(user.display_name()) {
 				continue;

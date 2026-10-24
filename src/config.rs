@@ -32,6 +32,9 @@ pub struct Config {
 	/// Global default for skipping the clone right after `add`; `--sync`/`--no-sync` override it.
 	#[serde(default)]
 	pub no_sync: bool,
+	/// How many repos to clone or pull at once.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub jobs: Option<usize>,
 	#[serde(default)]
 	pub track: Vec<TrackedAccount>,
 	/// Self-hosted forges, keyed by host (e.g. "gitlab.com"). github.com is never listed; it's the
