@@ -3,7 +3,6 @@ use std::io::{self, Write};
 use anyhow::{Context, Error, Result, bail};
 use crossterm::{
 	event::{self, Event, KeyCode, KeyEventKind},
-	style::Stylize,
 	terminal::{disable_raw_mode, enable_raw_mode},
 };
 
@@ -30,11 +29,25 @@ pub fn expand_targets(args: Vec<String>) -> Result<Vec<String>> {
 	Ok(out)
 }
 
+/// Asks for a line of text. An empty answer gives `default`, which is shown in brackets.
+pub fn ask(message: &str, default: Option<&str>) -> Result<String> {
+	match default {
+		Some(default) => print!("{message} [{default}]: "),
+		None => print!("{message}: "),
+	}
+	io::stdout().flush().context("Could not flush stdout")?;
+	let mut line = String::new();
+	if io::stdin().read_line(&mut line).context("Could not read input")? == 0 {
+		bail!("No input");
+	}
+	let answer = line.trim();
+	Ok(if answer.is_empty() { default.unwrap_or_default() } else { answer }.to_string())
+}
+
 /// A single-key confirmation prompt that returns immediately on 'y', 'n', or Enter.
 pub fn confirm(message: &str, default: bool) -> Result<bool> {
 	let hint = if default { "[Y/n]" } else { "[y/N]" };
-	// Format to look similar to inquire prompts
-	print!("{} {} {} ", "?".cyan(), message.bold(), hint.dark_grey());
+	print!("{message} {hint} ");
 	io::stdout().flush().context("Could not flush stdout")?;
 	enable_raw_mode().context("Could not enable raw mode")?;
 	let result = loop {
@@ -60,7 +73,7 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 	disable_raw_mode().ok();
 	match result {
 		Ok(val) => {
-			println!("{}", if val { "Yes".cyan() } else { "No".cyan() });
+			println!("{}", if val { "Yes" } else { "No" });
 			Ok(val)
 		}
 		Err(e) => {

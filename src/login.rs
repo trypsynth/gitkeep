@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
-use inquire::{Text, validator::Validation};
 use octocrab::OctocrabBuilder;
 use open::that as open_in_browser;
 
-use crate::{config::Config, utils::confirm};
+use crate::{
+	config::Config,
+	utils::{ask, confirm},
+};
 
 const TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=gitkeep";
 
@@ -11,17 +13,13 @@ pub async fn run() -> Result<()> {
 	if confirm("Open GitHub token settings in browser?", false)? && open_in_browser(TOKEN_URL).is_err() {
 		println!("Could not open browser. Please visit {TOKEN_URL}.");
 	}
-	let token = Text::new("Paste your token:")
-		.with_validator(|s: &str| {
-			if s.trim().is_empty() {
-				Ok(Validation::Invalid("Token cannot be empty.".into()))
-			} else {
-				Ok(Validation::Valid)
-			}
-		})
-		.prompt()?
-		.trim()
-		.to_string();
+	let token = loop {
+		let token = ask("Paste your token", None)?;
+		if !token.is_empty() {
+			break token;
+		}
+		println!("Token cannot be empty.");
+	};
 	println!("Validating token with GitHub...");
 	let client =
 		OctocrabBuilder::default().personal_token(token.clone()).build().context("Could not create GitHub client")?;

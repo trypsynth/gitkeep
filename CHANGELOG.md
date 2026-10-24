@@ -5,6 +5,7 @@
 - Added a per-host SSH setting. The first time you add something from a new host, gitkeep asks whether to clone from it over SSH; set `use_ssh` under that host in the config to change it later
 - Fixed a repo with no clone URL of the chosen kind (SSH or HTTPS) being silently skipped. It's now reported as a failure
 - `gitkeep size` now shows just the total by default. Pass `--breakdown` to also list each account's size, including each account on other forges instead of one line per host
+- Prompts, help, and error messages are no longer coloured
 - Repos are now cloned and pulled, and account listings fetched, several at a time (one per CPU thread, between 4 and 16), which makes big syncs several times faster. Change it with `gitkeep sync -j <N>` or `jobs = <N>` in the config
 
 ## 0.3.1

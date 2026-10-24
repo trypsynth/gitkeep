@@ -2,9 +2,11 @@ use std::path::{self, Path};
 
 use anyhow::{Context, Result};
 use dirs::home_dir;
-use inquire::Text;
 
-use crate::{config::Config, utils::confirm};
+use crate::{
+	config::Config,
+	utils::{ask, confirm},
+};
 
 pub fn run() -> Result<()> {
 	let path = Config::path()?;
@@ -19,10 +21,7 @@ pub fn run() -> Result<()> {
 	let default_archive = config.archive_dir.clone().unwrap_or_else(|| {
 		home_dir().map_or_else(|| "~/gitkeep".to_string(), |h| h.join("gitkeep").to_string_lossy().into_owned())
 	});
-	let archive_dir = Text::new("Archive directory")
-		.with_default(&default_archive)
-		.prompt()
-		.map(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })?;
+	let archive_dir = Some(ask("Archive directory", Some(&default_archive))?).filter(|s| !s.is_empty());
 	config.archive_dir = archive_dir.map(|dir| resolve_archive_dir(&dir)).transpose()?;
 	config.use_ssh = confirm("Use SSH clone URLs?", config.use_ssh)?;
 	config.submodules = confirm("Clone submodules by default?", config.submodules)?;
