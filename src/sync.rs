@@ -2,8 +2,10 @@ use std::{
 	collections::{HashMap, HashSet},
 	fmt::Write as _,
 	fs,
+	num::NonZero,
 	path::Path,
 	string::ToString,
+	thread,
 };
 
 use anyhow::{Context, Result, bail};
@@ -41,8 +43,12 @@ pub struct SyncOptions {
 	pub jobs: Option<usize>,
 }
 
-/// How many repos to clone or pull at once when neither `--jobs` nor the config says.
-const DEFAULT_JOBS: usize = 8;
+/// How many repos to clone or pull at once when neither `--jobs` nor the config says: one per CPU
+/// thread, kept between 4 and 16. Clones mostly wait on the network rather than the CPU, so small
+/// machines still benefit from a few at once, and big ones shouldn't flood a forge with connections.
+fn default_jobs() -> usize {
+	thread::available_parallelism().map_or(8, NonZero::get).clamp(4, 16)
+}
 
 /// Read-only settings shared by every repo synced during a single run.
 #[derive(Clone, Copy)]
@@ -175,7 +181,7 @@ async fn sync_all(config: &mut Config, batches: &[Batch<'_>], verbosity: Verbosi
 		let jobs = if verbosity == Verbosity::Verbose {
 			1
 		} else {
-			batch.opts.jobs.or(config.jobs).unwrap_or(DEFAULT_JOBS).max(1)
+			batch.opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1)
 		};
 		let ctx = SyncContext { archive_dir: &archive_dir, opts: batch.opts, verbosity, jobs };
 		for user in batch.users {
