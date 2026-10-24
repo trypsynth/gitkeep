@@ -34,9 +34,11 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 			&& !config.hosts.contains_key(host)
 		{
 			let kind = forge::detect(host).await?;
-			// Scripts get the global setting; only a person at a terminal is asked.
+			// Scripts get the global setting; only a person at a terminal is asked. An answer that
+			// matches the global setting isn't stored, so the host keeps following it if it changes.
 			let use_ssh = if io::stdin().is_terminal() {
 				Some(confirm(&format!("Use SSH clone URLs for {host}?"), config.use_ssh)?)
+					.filter(|&ssh| ssh != config.use_ssh)
 			} else {
 				None
 			};

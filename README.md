@@ -58,6 +58,7 @@ Repos on other forges are given as URLs (or as `host/path`): `gitkeep add https:
 [hosts."gitlab.example.com"]
 kind = "gitlab"
 token = "glpat-..."
+use_ssh = false  # optional: overrides the global SSH setting for this host
 ```
 
 | Flag | Description |
