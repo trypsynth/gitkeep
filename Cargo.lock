@@ -785,6 +785,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "futures-util",
  "inquire",
  "octocrab",
  "open",

@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use futures_util::{StreamExt as _, stream};
 
 mod git;
 mod repo;
@@ -20,7 +21,7 @@ use self::{
 };
 use crate::{
 	config::{Config, State, TrackedAccount},
-	forge::{Forge, RemoteRepo, Target, archive_path, split_host},
+	forge::{AccountRepos, Forge, RemoteRepo, Target, archive_path, split_host},
 	track::{self, Added},
 	utils::plural,
 };
@@ -65,6 +66,46 @@ struct Batch<'a> {
 	users: &'a [TrackedAccount],
 	pinned: &'a [String],
 	opts: SyncOptions,
+}
+
+/// A tracked account or pinned repo whose listing a sync needs from its forge.
+enum Task<'a> {
+	Account(&'a TrackedAccount),
+	Pin { full_name: &'a str, stored_id: Option<u64> },
+}
+
+/// A task with what its forge returned.
+enum Fetched<'a> {
+	Account(&'a TrackedAccount, Result<AccountRepos>),
+	Pin { full_name: &'a str, stored_id: Option<u64>, repo: Result<Option<RemoteRepo>> },
+}
+
+/// Fetches every task's listing from its forge, up to `limit` requests at once, in task order.
+/// Every task's forge must already be in `forges`.
+async fn fetch_all<'a>(
+	forges: &HashMap<Option<String>, Result<Forge>>,
+	tasks: Vec<Task<'a>>,
+	limit: usize,
+) -> Vec<Fetched<'a>> {
+	let forge = |host: Option<&str>| match forges.get(&host.map(str::to_string)) {
+		Some(Ok(forge)) => forge,
+		_ => unreachable!("tasks are only made for hosts with a forge"),
+	};
+	stream::iter(tasks)
+		.map(|task| async move {
+			match task {
+				Task::Account(user) => {
+					Fetched::Account(user, forge(user.host.as_deref()).account(&user.name, user.id).await)
+				}
+				Task::Pin { full_name, stored_id } => {
+					let (host, path) = split_host(full_name).map_or((None, full_name), |(h, p)| (Some(h), p));
+					Fetched::Pin { full_name, stored_id, repo: forge(host).repo(path, stored_id).await }
+				}
+			}
+		})
+		.buffered(limit)
+		.collect()
+		.await
 }
 
 /// The mutable sync state and running totals threaded through a single run.
@@ -177,20 +218,18 @@ async fn sync_all(config: &mut Config, batches: &[Batch<'_>], verbosity: Verbosi
 	let mut seen = HashSet::new();
 	let mut config_changed = false;
 	for batch in batches {
+		let parallel = batch.opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1);
 		// Verbose mode streams git's own output, which would interleave unreadably in parallel.
-		let jobs = if verbosity == Verbosity::Verbose {
-			1
-		} else {
-			batch.opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1)
-		};
+		let jobs = if verbosity == Verbosity::Verbose { 1 } else { parallel };
 		let ctx = SyncContext { archive_dir: &archive_dir, opts: batch.opts, verbosity, jobs };
+		let mut tasks = Vec::new();
 		for user in batch.users {
 			if !seen.insert(user.display_name()) {
 				continue;
 			}
 			let forge = forges.entry(user.host.clone()).or_insert_with(|| config.forge(user.host.as_deref()));
 			match forge {
-				Ok(forge) => config_changed |= sync_one(user, forge, ctx, config, &mut sync_state).await,
+				Ok(_) => tasks.push(Task::Account(user)),
 				Err(e) => {
 					eprintln!("  Could not sync {}: {e:#}.", user.display_name());
 					sync_state.totals.failed += 1;
@@ -201,12 +240,20 @@ async fn sync_all(config: &mut Config, batches: &[Batch<'_>], verbosity: Verbosi
 			let host = split_host(full_name).map(|(h, _)| h.to_string());
 			let forge = forges.entry(host.clone()).or_insert_with(|| config.forge(host.as_deref()));
 			match forge {
-				Ok(forge) => config_changed |= sync_one_pinned(full_name, forge, ctx, config, &mut sync_state).await,
+				Ok(_) => tasks.push(Task::Pin { full_name, stored_id: config.pinned_id(full_name) }),
 				Err(e) => {
 					eprintln!("  Could not sync {full_name}: {e:#}.");
 					sync_state.totals.failed += 1;
 				}
 			}
+		}
+		for fetched in fetch_all(&forges, tasks, parallel).await {
+			config_changed |= match fetched {
+				Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, &mut sync_state),
+				Fetched::Pin { full_name, stored_id, repo } => {
+					sync_one_pinned(full_name, stored_id, repo, ctx, config, &mut sync_state)
+				}
+			};
 		}
 	}
 	state.save().context("Could not save sync state")?;
@@ -235,9 +282,9 @@ fn matches_target(user: &TrackedAccount, target: &str) -> bool {
 
 /// Syncs every repo of one tracked account. Follows account renames (by stable id, where the forge
 /// has one), moving the local archive and updating the config. Returns `true` if the config changed.
-async fn sync_one(
+fn sync_one(
 	user: &TrackedAccount,
-	forge: &Forge,
+	fetched: Result<AccountRepos>,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
@@ -246,7 +293,7 @@ async fn sync_one(
 	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {display}...");
 	}
-	let account = match forge.account(&user.name, user.id).await {
+	let account = match fetched {
 		Ok(account) => account,
 		Err(e) => {
 			eprintln!("  Could not fetch repositories for {display}: {e:#}.");
@@ -311,9 +358,10 @@ fn report_found(repos: &[RemoteRepo], display: &str, add_target: &str, include_f
 
 /// Syncs one individually pinned repo. Follows renames (by stable id, where the forge has one),
 /// moving the local copy and updating the pin. Returns `true` if the config changed.
-async fn sync_one_pinned(
+fn sync_one_pinned(
 	full_name: &str,
-	forge: &Forge,
+	stored_id: Option<u64>,
+	fetched: Result<Option<RemoteRepo>>,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
@@ -321,11 +369,9 @@ async fn sync_one_pinned(
 	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {full_name}...");
 	}
-	let path = split_host(full_name).map_or(full_name, |(_, path)| path);
-	let stored_id = config.pinned_id(full_name);
 	let use_submodules =
 		resolve_submodules(ctx.opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
-	let repo = match forge.repo(path, stored_id).await {
+	let repo = match fetched {
 		Ok(Some(repo)) => repo,
 		Ok(None) => {
 			eprintln!("  Could not fetch {full_name}.");
