@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Added a per-host SSH setting. The first time you add something from a new host, gitkeep asks whether to clone from it over SSH; set `use_ssh` under that host in the config to change it later
 - Fixed a repo with no clone URL of the chosen kind (SSH or HTTPS) being silently skipped. It's now reported as a failure
