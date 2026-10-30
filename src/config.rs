@@ -196,7 +196,7 @@ impl Config {
 			entry.submodules = submodules;
 			entry.host = host.map(ToString::to_string);
 			println!(
-				"Now tracking {}{}{}",
+				"Now tracking {}{}{}.",
 				display,
 				if forks { " (forks included)" } else { "" },
 				if frozen { " (frozen)" } else { "" }

@@ -22,7 +22,7 @@ use self::{
 use crate::{
 	config::{Config, State, TrackedAccount},
 	forge::{AccountRepos, Forge, RemoteRepo, Target, archive_path, split_host},
-	track::{self, Added},
+	track::{self, Added, AddedItem},
 	utils::plural,
 };
 
@@ -61,11 +61,10 @@ struct SyncContext<'a> {
 	jobs: usize,
 }
 
-/// Accounts and pinned repos synced with the same options.
-struct Batch<'a> {
-	users: &'a [TrackedAccount],
-	pinned: &'a [String],
-	opts: SyncOptions,
+/// A tracked account or pinned repo to sync.
+enum Item {
+	Account(TrackedAccount),
+	Pin(String),
 }
 
 /// A tracked account or pinned repo whose listing a sync needs from its forge.
@@ -127,20 +126,19 @@ pub async fn run(targets: &[String], opts: SyncOptions, verbosity: Verbosity) ->
 		track::add(&untracked, false, false, None).await?;
 	}
 	let mut config = Config::load().context("Could not load config")?;
-	let mut accounts: Vec<TrackedAccount> = Vec::new();
-	let mut pinned: Vec<String> = Vec::new();
-	for target in targets {
-		match classify(&config, target) {
-			Named::Account(account) => accounts.push(account),
-			Named::Pin(pin) if !pinned.contains(&pin) => pinned.push(pin),
-			Named::Pin(_) | Named::Untracked => {}
-		}
-	}
-	if accounts.is_empty() && pinned.is_empty() {
+	let items: Vec<Item> = targets
+		.iter()
+		.filter_map(|target| match classify(&config, target) {
+			Named::Account(account) => Some(Item::Account(account)),
+			Named::Pin(pin) => Some(Item::Pin(pin)),
+			Named::Untracked => None,
+		})
+		.collect();
+	if items.is_empty() {
 		println!("Nothing to sync.");
 		return Ok(());
 	}
-	sync_all(&mut config, &[Batch { users: &accounts, pinned: &pinned, opts }], verbosity).await
+	sync_all(&mut config, &items, opts, verbosity).await
 }
 
 async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
@@ -156,9 +154,13 @@ async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 		println!("All tracked accounts are frozen. Use 'gitkeep sync <account>' to sync one anyway.");
 		return Ok(());
 	}
-	let pinned_to_sync: Vec<String> =
-		config.pinned.iter().map(|p| &p.full_name).filter(|p| !to_sync.iter().any(|t| t.covers(p))).cloned().collect();
-	sync_all(&mut config, &[Batch { users: &to_sync, pinned: &pinned_to_sync, opts }], verbosity).await
+	let pinned_to_sync = config
+		.pinned
+		.iter()
+		.filter(|p| !to_sync.iter().any(|t| t.covers(&p.full_name)))
+		.map(|p| Item::Pin(p.full_name.clone()));
+	let items: Vec<Item> = to_sync.iter().cloned().map(Item::Account).chain(pinned_to_sync).collect();
+	sync_all(&mut config, &items, opts, verbosity).await
 }
 
 /// What a `sync <target>` argument refers to in the config.
@@ -184,26 +186,27 @@ fn classify(config: &Config, arg: &str) -> Named {
 	}
 }
 
-/// Syncs what `gitkeep add` just added, as one run with one summary. `opts` applies only to the
-/// newly added accounts, not to owners that had a repo restored or to pinned repos.
-pub async fn run_added(added: &Added, opts: SyncOptions) -> Result<()> {
+/// Syncs what `gitkeep add` just added, as one run with one summary. `add` has already saved any
+/// `--forks` or submodules choice to the config, so no per-run options are needed.
+pub async fn run_added(added: &Added) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
-	let tracked = |names: &[String]| -> Vec<TrackedAccount> {
-		config.track.iter().filter(|u| names.iter().any(|t| matches_target(u, t))).cloned().collect()
-	};
-	let accounts = tracked(&added.accounts);
-	let restored = tracked(&added.restored_owners);
-	if accounts.is_empty() && restored.is_empty() && added.pinned.is_empty() {
+	let tracked = |name: &str| config.track.iter().find(|u| matches_target(u, name)).cloned();
+	let items: Vec<Item> = added
+		.items
+		.iter()
+		.filter_map(|item| match item {
+			AddedItem::Account(name) | AddedItem::Restored(name) => tracked(name).map(Item::Account),
+			AddedItem::Pin(full_name) => Some(Item::Pin(full_name.clone())),
+		})
+		.collect();
+	if items.is_empty() {
 		return Ok(());
 	}
-	let batches = [
-		Batch { users: &accounts, pinned: &[], opts },
-		Batch { users: &restored, pinned: &added.pinned, opts: SyncOptions::default() },
-	];
-	sync_all(&mut config, &batches, Verbosity::Normal).await
+	sync_all(&mut config, &items, SyncOptions::default(), Verbosity::Normal).await
 }
 
-async fn sync_all(config: &mut Config, batches: &[Batch<'_>], verbosity: Verbosity) -> Result<()> {
+/// Syncs `items` in order, in one run with one summary.
+async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 	let archive_dir = config.archive_dir()?;
 	fs::create_dir_all(&archive_dir)
 		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
@@ -217,44 +220,37 @@ async fn sync_all(config: &mut Config, batches: &[Batch<'_>], verbosity: Verbosi
 	let mut forges: HashMap<Option<String>, Result<Forge>> = HashMap::new();
 	let mut seen = HashSet::new();
 	let mut config_changed = false;
-	for batch in batches {
-		let parallel = batch.opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1);
-		// Verbose mode streams git's own output, which would interleave unreadably in parallel.
-		let jobs = if verbosity == Verbosity::Verbose { 1 } else { parallel };
-		let ctx = SyncContext { archive_dir: &archive_dir, opts: batch.opts, verbosity, jobs };
-		let mut tasks = Vec::new();
-		for user in batch.users {
-			if !seen.insert(user.display_name()) {
-				continue;
-			}
-			let forge = forges.entry(user.host.clone()).or_insert_with(|| config.forge(user.host.as_deref()));
-			match forge {
-				Ok(_) => tasks.push(Task::Account(user)),
-				Err(e) => {
-					eprintln!("  Could not sync {}: {e:#}.", user.display_name());
-					sync_state.totals.failed += 1;
-				}
-			}
+	let parallel = opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1);
+	// Verbose mode streams git's own output, which would interleave unreadably in parallel.
+	let jobs = if verbosity == Verbosity::Verbose { 1 } else { parallel };
+	let mut tasks = Vec::new();
+	let ctx = SyncContext { archive_dir: &archive_dir, opts, verbosity, jobs };
+	for item in items {
+		let (host, display) = match item {
+			Item::Account(user) => (user.host.clone(), user.display_name()),
+			Item::Pin(full_name) => (split_host(full_name).map(|(h, _)| h.to_string()), full_name.clone()),
+		};
+		if !seen.insert(display.clone()) {
+			continue;
 		}
-		for full_name in batch.pinned {
-			let host = split_host(full_name).map(|(h, _)| h.to_string());
-			let forge = forges.entry(host.clone()).or_insert_with(|| config.forge(host.as_deref()));
-			match forge {
-				Ok(_) => tasks.push(Task::Pin { full_name, stored_id: config.pinned_id(full_name) }),
-				Err(e) => {
-					eprintln!("  Could not sync {full_name}: {e:#}.");
-					sync_state.totals.failed += 1;
-				}
+		match forges.entry(host.clone()).or_insert_with(|| config.forge(host.as_deref())) {
+			Ok(_) => tasks.push(match item {
+				Item::Account(user) => Task::Account(user),
+				Item::Pin(full_name) => Task::Pin { full_name, stored_id: config.pinned_id(full_name) },
+			}),
+			Err(e) => {
+				eprintln!("  Could not sync {display}: {e:#}.");
+				sync_state.totals.failed += 1;
 			}
 		}
-		for fetched in fetch_all(&forges, tasks, parallel).await {
-			config_changed |= match fetched {
-				Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, &mut sync_state),
-				Fetched::Pin { full_name, stored_id, repo } => {
-					sync_one_pinned(full_name, stored_id, repo, ctx, config, &mut sync_state)
-				}
-			};
-		}
+	}
+	for fetched in fetch_all(&forges, tasks, parallel).await {
+		config_changed |= match fetched {
+			Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, &mut sync_state),
+			Fetched::Pin { full_name, stored_id, repo } => {
+				sync_one_pinned(full_name, stored_id, repo, ctx, config, &mut sync_state)
+			}
+		};
 	}
 	state.save().context("Could not save sync state")?;
 	if config_changed {

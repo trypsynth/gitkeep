@@ -49,12 +49,7 @@ async fn run_add(
 	if no_sync {
 		return Ok(());
 	}
-	let opts = sync::SyncOptions {
-		force_forks: forks,
-		force_submodules: submodules_override.unwrap_or(false),
-		..Default::default()
-	};
-	sync::run_added(&added, opts).await
+	sync::run_added(&added).await
 }
 
 #[tokio::main(flavor = "current_thread")]

@@ -11,13 +11,19 @@ use crate::{
 	utils::confirm,
 };
 
-/// What `add` recorded, by key, so the caller can sync it right away.
+/// What `add` recorded, in the order it was given, so the caller can sync it right away.
 #[derive(Default)]
 pub struct Added {
-	pub accounts: Vec<String>,
-	pub pinned: Vec<String>,
-	/// Tracked accounts that had a previously removed repo added back.
-	pub restored_owners: Vec<String>,
+	pub items: Vec<AddedItem>,
+}
+
+/// One thing `add` recorded, by key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AddedItem {
+	Account(String),
+	/// A tracked account that had a previously removed repo added back.
+	Restored(String),
+	Pin(String),
 }
 
 /// Adds accounts and repos from any forge. Each target is a GitHub name (`owner` or
@@ -52,41 +58,43 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 		resolved.push((target.host, forge.resolve(&target.path).await?));
 	}
 	let mut added = Added::default();
-	// Record accounts before repos, so `gitkeep add rust-lang rust-lang/mdBook` tracks the org and
-	// skips the now-redundant pin.
-	for (host, item) in &resolved {
-		if let Resolved::Account(name) = item {
-			changed |= config.add_account(host.as_deref(), name, forks, frozen, submodules);
-			let tracked = TrackedAccount { host: host.clone(), ..TrackedAccount::with_options(name, forks, frozen) };
-			for pin in config.remove_pins_covered(&tracked) {
-				println!("{pin} removed (now covered by {}).", tracked.display_name());
-				changed = true;
-			}
-			added.accounts.push(tracked.display_name());
-		}
-	}
-	for (_, item) in resolved {
-		let Resolved::Repo(repo) = item else { continue };
-		let key = repo.full_name;
-		if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).map(TrackedAccount::display_name) {
-			if let Some(restored) = config.include_repo(&key) {
-				println!("Now tracking {restored} again.");
-				changed = true;
-				if !added.restored_owners.contains(&owner) {
-					added.restored_owners.push(owner);
+	for (host, item) in resolved {
+		match item {
+			Resolved::Account(name) => {
+				changed |= config.add_account(host.as_deref(), &name, forks, frozen, submodules);
+				let tracked = TrackedAccount { host, ..TrackedAccount::with_options(&name, forks, frozen) };
+				// A repo given earlier in the same command is dropped here too, so it isn't synced twice.
+				for pin in config.remove_pins_covered(&tracked) {
+					println!("{pin} removed (now covered by {}).", tracked.display_name());
+					added.items.retain(|i| *i != AddedItem::Pin(pin.clone()));
+					changed = true;
 				}
-			} else {
-				println!("{owner} is already fully tracked; {key} will be synced automatically.");
+				added.items.push(AddedItem::Account(tracked.display_name()));
 			}
-		} else if config.is_pinned(&key) {
-			println!("Already tracking {key}.");
-		} else {
-			// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
-			config.include_repo(&key);
-			config.pin_repo_with_options(&key, Some(repo.id), submodules);
-			println!("Now tracking {key}.");
-			added.pinned.push(key);
-			changed = true;
+			Resolved::Repo(repo) => {
+				let key = repo.full_name;
+				if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).map(TrackedAccount::display_name) {
+					if let Some(restored) = config.include_repo(&key) {
+						println!("Now tracking {restored} again.");
+						changed = true;
+						let owner = AddedItem::Restored(owner);
+						if !added.items.contains(&owner) {
+							added.items.push(owner);
+						}
+					} else {
+						println!("{owner} is already fully tracked; {key} will be synced automatically.");
+					}
+				} else if config.is_pinned(&key) {
+					println!("Already tracking {key}.");
+				} else {
+					// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
+					config.include_repo(&key);
+					config.pin_repo_with_options(&key, Some(repo.id), submodules);
+					println!("Now tracking {key}.");
+					added.items.push(AddedItem::Pin(key));
+					changed = true;
+				}
+			}
 		}
 	}
 	if changed {
