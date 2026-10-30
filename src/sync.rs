@@ -16,7 +16,7 @@ mod repo;
 mod summary;
 
 use self::{
-	repo::sync_repo_list,
+	repo::Plan,
 	summary::{Totals, build_normal_detail, build_summary},
 };
 use crate::{
@@ -244,14 +244,16 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 			}
 		}
 	}
+	let mut plan = Plan::default();
 	for fetched in fetch_all(&forges, tasks, parallel).await {
 		config_changed |= match fetched {
-			Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, &mut sync_state),
+			Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, &mut sync_state, &mut plan),
 			Fetched::Pin { full_name, stored_id, repo } => {
-				sync_one_pinned(full_name, stored_id, repo, ctx, config, &mut sync_state)
+				sync_one_pinned(full_name, stored_id, repo, ctx, config, &mut sync_state, &mut plan)
 			}
 		};
 	}
+	plan.run(ctx, &mut sync_state);
 	state.save().context("Could not save sync state")?;
 	if config_changed {
 		config.save().context("Could not save config after correcting username casing")?;
@@ -276,14 +278,16 @@ fn matches_target(user: &TrackedAccount, target: &str) -> bool {
 	}
 }
 
-/// Syncs every repo of one tracked account. Follows account renames (by stable id, where the forge
-/// has one), moving the local archive and updating the config. Returns `true` if the config changed.
+/// Plans the sync of every repo of one tracked account. Follows account renames (by stable id, where
+/// the forge has one), moving the local archive and updating the config. Returns `true` if the
+/// config changed.
 fn sync_one(
 	user: &TrackedAccount,
 	fetched: Result<AccountRepos>,
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
+	plan: &mut Plan,
 ) -> bool {
 	let display = user.display_name();
 	if ctx.verbosity == Verbosity::Verbose {
@@ -329,7 +333,7 @@ fn sync_one(
 	let add_hint =
 		current.host.as_ref().map_or_else(|| current.name.clone(), |h| format!("https://{h}/{}", current.name));
 	report_found(&account.repos, &current.display_name(), &add_hint, include_forks, ctx.verbosity);
-	sync_repo_list(account.repos, include_forks, use_submodules, ctx, config, sync_state);
+	plan.add(account.repos, include_forks, use_submodules, ctx, config, sync_state);
 	config_changed
 }
 
@@ -352,8 +356,8 @@ fn report_found(repos: &[RemoteRepo], display: &str, add_target: &str, include_f
 	println!("{msg}");
 }
 
-/// Syncs one individually pinned repo. Follows renames (by stable id, where the forge has one),
-/// moving the local copy and updating the pin. Returns `true` if the config changed.
+/// Plans the sync of one individually pinned repo. Follows renames (by stable id, where the forge
+/// has one), moving the local copy and updating the pin. Returns `true` if the config changed.
 fn sync_one_pinned(
 	full_name: &str,
 	stored_id: Option<u64>,
@@ -361,6 +365,7 @@ fn sync_one_pinned(
 	ctx: SyncContext<'_>,
 	config: &mut Config,
 	sync_state: &mut SyncState<'_>,
+	plan: &mut Plan,
 ) -> bool {
 	if ctx.verbosity == Verbosity::Verbose {
 		println!("Checking {full_name}...");
@@ -402,7 +407,7 @@ fn sync_one_pinned(
 		pin.id = Some(repo.id);
 		config_changed = true;
 	}
-	sync_repo_list(vec![repo], true, use_submodules, ctx, config, sync_state);
+	plan.add(vec![repo], true, use_submodules, ctx, config, sync_state);
 	config_changed
 }
 
