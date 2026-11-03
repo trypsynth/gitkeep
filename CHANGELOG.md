@@ -4,6 +4,7 @@
 
 - Fixed `gitkeep add` and `gitkeep sync` listing and syncing accounts before repos instead of in the order you gave them
 - Pinned repos and small accounts are now cloned and pulled in parallel too. Before, only repos under the same account ran at once, so a sync of many pins ran one repo at a time
+- Syncing several GitHub users with a token now fetches the list of repos the token can see once instead of once per user, which saves a lot of API requests
 
 ## 0.4.0
 
