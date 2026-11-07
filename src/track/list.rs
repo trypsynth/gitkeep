@@ -47,12 +47,7 @@ fn format_list(config: &Config) -> String {
 	if !config.excluded.is_empty() {
 		let mut sorted: Vec<&String> = config.excluded.iter().collect();
 		sorted.sort_by_key(|r| r.to_lowercase());
-		let _ = writeln!(
-			out,
-			"
-Removed repos ({} total):",
-			sorted.len()
-		);
+		let _ = writeln!(out, "\nRemoved repos ({} total):", sorted.len());
 		for repo in sorted {
 			let _ = writeln!(out, "  {repo}");
 		}

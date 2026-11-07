@@ -6,6 +6,8 @@
 - Pinned repos and small accounts are now cloned and pulled in parallel too. Before, only repos under the same account ran at once, so a sync of many pins ran one repo at a time
 - Syncing several GitHub users with a token now fetches the list of repos the token can see once instead of once per user, which saves a lot of API requests
 - The config and sync state files are now replaced in one step when saved, so a crash or a full disk can no longer leave them truncated
+- A sync state file that can't be read is now moved aside with a warning instead of being silently overwritten
+- Removed repos are now saved to the config in sorted order, so saving no longer reshuffles them
 
 ## 0.4.0
 

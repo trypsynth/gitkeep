@@ -53,8 +53,10 @@ impl TrackedAccount {
 			(Some(h), Some((host, path))) => {
 				h == host
 					&& path.rsplit_once('/').is_some_and(|(owner, _)| {
-						owner.eq_ignore_ascii_case(&self.name)
-							|| owner.to_lowercase().starts_with(&format!("{}/", self.name.to_lowercase()))
+						// The owner is the account itself or one of its subgroups (`name/...`).
+						let n = self.name.len();
+						owner.get(..n).is_some_and(|head| head.eq_ignore_ascii_case(&self.name))
+							&& matches!(owner.as_bytes().get(n), None | Some(b'/'))
 					})
 			}
 			(None, None) => full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(&self.name)),
@@ -201,6 +203,7 @@ mod tests {
 		};
 		assert!(user.covers("gitlab.example.com/grp/proj"));
 		assert!(user.covers("gitlab.example.com/grp/sub/proj"));
+		assert!(user.covers("gitlab.example.com/GRP/Sub/proj"));
 		assert!(!user.covers("gitlab.example.com/other/proj"));
 		assert!(!user.covers("gitlab.other.com/grp/proj"));
 	}

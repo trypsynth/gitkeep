@@ -1,7 +1,7 @@
 use std::{
-	collections::{HashMap, HashSet},
+	collections::{BTreeMap, HashSet},
 	fs, mem,
-	path::PathBuf,
+	path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
@@ -15,7 +15,7 @@ use crate::utils::write_atomic;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
 	#[serde(default)]
-	pub repos: HashMap<String, RepoState>,
+	pub repos: BTreeMap<String, RepoState>,
 	#[serde(default, skip_serializing)]
 	pub skipped: HashSet<String>,
 }
@@ -38,12 +38,31 @@ impl State {
 	}
 
 	pub fn load() -> Result<Self> {
-		let path = Self::path()?;
+		Self::load_from(&Self::path()?)
+	}
+
+	fn load_from(path: &Path) -> Result<Self> {
 		if !path.exists() {
 			return Ok(Self::default());
 		}
-		let raw = fs::read_to_string(&path).with_context(|| format!("Could not read state from {}", path.display()))?;
-		Ok(from_str(&raw).unwrap_or_default())
+		let raw = fs::read_to_string(path).with_context(|| format!("Could not read state from {}", path.display()))?;
+		match from_str(&raw) {
+			Ok(state) => Ok(state),
+			// The state only saves work, so a sync can carry on without it, but keep the broken file
+			// instead of letting the next save overwrite it.
+			Err(e) => {
+				let backup = path.with_extension("toml.bak");
+				fs::rename(path, &backup).with_context(|| {
+					format!("State at {} is not valid TOML ({e}), and could not be moved aside", path.display())
+				})?;
+				eprintln!(
+					"Warning: State at {} is not valid TOML, so every repo will be pulled this time. The old file is at {}.",
+					path.display(),
+					backup.display()
+				);
+				Ok(Self::default())
+			}
+		}
 	}
 
 	pub fn save(&self) -> Result<()> {
@@ -63,7 +82,22 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+	use std::{env, process};
+
 	use super::*;
+
+	#[test]
+	fn corrupt_state_is_moved_aside_and_loads_empty() {
+		let dir = env::temp_dir().join(format!("gitkeep-state-test-{}", process::id()));
+		fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("state.toml");
+		fs::write(&path, "not [valid toml").unwrap();
+		let state = State::load_from(&path).unwrap();
+		assert!(state.repos.is_empty());
+		assert!(!path.exists());
+		assert_eq!(fs::read_to_string(dir.join("state.toml.bak")).unwrap(), "not [valid toml");
+		fs::remove_dir_all(&dir).unwrap();
+	}
 
 	#[test]
 	fn state_mark_synced_stores_pushed_at() {

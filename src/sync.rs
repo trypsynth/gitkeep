@@ -4,7 +4,6 @@ use std::{
 	fs,
 	num::NonZero,
 	path::Path,
-	string::ToString,
 	thread,
 };
 
@@ -22,7 +21,7 @@ use self::{
 use crate::{
 	config::{Config, State, TrackedAccount},
 	forge::{AccountRepos, Forge, RemoteRepo, Target, archive_path, split_host},
-	track::{self, Added, AddedItem},
+	track::{self, AddedItem},
 	utils::plural,
 };
 
@@ -149,7 +148,7 @@ async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
              or run 'gitkeep login' to authenticate and auto-add your account."
 		);
 	}
-	let to_sync: Vec<TrackedAccount> = config.track.iter().filter(|u| !u.frozen).cloned().collect();
+	let to_sync: Vec<&TrackedAccount> = config.track.iter().filter(|u| !u.frozen).collect();
 	if to_sync.is_empty() && config.pinned.is_empty() {
 		println!("All tracked accounts are frozen. Use 'gitkeep sync <account>' to sync one anyway.");
 		return Ok(());
@@ -159,7 +158,7 @@ async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 		.iter()
 		.filter(|p| !to_sync.iter().any(|t| t.covers(&p.full_name)))
 		.map(|p| Item::Pin(p.full_name.clone()));
-	let items: Vec<Item> = to_sync.iter().cloned().map(Item::Account).chain(pinned_to_sync).collect();
+	let items: Vec<Item> = to_sync.iter().map(|&u| Item::Account(u.clone())).chain(pinned_to_sync).collect();
 	sync_all(&mut config, &items, opts, verbosity).await
 }
 
@@ -188,11 +187,10 @@ fn classify(config: &Config, arg: &str) -> Named {
 
 /// Syncs what `gitkeep add` just added, as one run with one summary. `add` has already saved any
 /// `--forks` or submodules choice to the config, so no per-run options are needed.
-pub async fn run_added(added: &Added) -> Result<()> {
+pub async fn run_added(added: &[AddedItem]) -> Result<()> {
 	let mut config = Config::load().context("Could not load config")?;
 	let tracked = |name: &str| config.track.iter().find(|u| matches_target(u, name)).cloned();
 	let items: Vec<Item> = added
-		.items
 		.iter()
 		.filter_map(|item| match item {
 			AddedItem::Account(name) | AddedItem::Restored(name) => tracked(name).map(Item::Account),

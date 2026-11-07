@@ -3,7 +3,7 @@ mod list;
 mod remove;
 
 pub use self::{
-	add::{Added, AddedItem, add},
+	add::{AddedItem, add},
 	list::list,
 	remove::remove,
 };

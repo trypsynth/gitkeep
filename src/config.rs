@@ -1,5 +1,5 @@
 use std::{
-	collections::{BTreeMap, HashMap, HashSet},
+	collections::{BTreeMap, BTreeSet, HashMap},
 	fs, mem,
 	path::PathBuf,
 	sync::Once,
@@ -49,8 +49,8 @@ pub struct Config {
 	gitlab_tokens: HashMap<String, String>,
 	/// Repos under a fully tracked account that were removed with `gitkeep remove user/repo` and
 	/// are left out of syncs. Read from the pre-0.3.0 `skipped` key too.
-	#[serde(default, alias = "skipped", skip_serializing_if = "HashSet::is_empty")]
-	pub excluded: HashSet<String>,
+	#[serde(default, alias = "skipped", skip_serializing_if = "BTreeSet::is_empty")]
+	pub excluded: BTreeSet<String>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub pinned: Vec<PinnedRepo>,
 }
@@ -295,10 +295,7 @@ impl Config {
 
 	/// Removes all pinned repos already covered by `tracked` and returns their full names.
 	pub fn remove_pins_covered(&mut self, tracked: &TrackedAccount) -> Vec<String> {
-		let to_remove: Vec<String> =
-			self.pinned.iter().filter(|p| tracked.covers(&p.full_name)).map(|p| p.full_name.clone()).collect();
-		self.pinned.retain(|p| !to_remove.contains(&p.full_name));
-		to_remove
+		self.pinned.extract_if(.., |p| tracked.covers(&p.full_name)).map(|p| p.full_name).collect()
 	}
 }
 

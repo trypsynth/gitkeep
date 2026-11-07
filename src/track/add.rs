@@ -11,13 +11,8 @@ use crate::{
 	utils::confirm,
 };
 
-/// What `add` recorded, in the order it was given, so the caller can sync it right away.
-#[derive(Default)]
-pub struct Added {
-	pub items: Vec<AddedItem>,
-}
-
-/// One thing `add` recorded, by key.
+/// One thing `add` recorded, by key. `add` returns them in the order they were given, so the
+/// caller can sync them right away.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AddedItem {
 	Account(String),
@@ -29,7 +24,7 @@ pub enum AddedItem {
 /// Adds accounts and repos from any forge. Each target is a GitHub name (`owner` or
 /// `owner/repo`), a host-qualified name (`host/path`), or a URL. The first time a host is seen, its
 /// forge kind is detected and recorded.
-pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<Added> {
+pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<Vec<AddedItem>> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let mut forges: HashMap<Option<String>, Forge> = HashMap::new();
@@ -57,7 +52,7 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 		};
 		resolved.push((target.host, forge.resolve(&target.path).await?));
 	}
-	let mut added = Added::default();
+	let mut added = Vec::new();
 	for (host, item) in resolved {
 		match item {
 			Resolved::Account(name) => {
@@ -66,10 +61,10 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 				// A repo given earlier in the same command is dropped here too, so it isn't synced twice.
 				for pin in config.remove_pins_covered(&tracked) {
 					println!("{pin} removed (now covered by {}).", tracked.display_name());
-					added.items.retain(|i| *i != AddedItem::Pin(pin.clone()));
+					added.retain(|i| !matches!(i, AddedItem::Pin(p) if *p == pin));
 					changed = true;
 				}
-				added.items.push(AddedItem::Account(tracked.display_name()));
+				added.push(AddedItem::Account(tracked.display_name()));
 			}
 			Resolved::Repo(repo) => {
 				let key = repo.full_name;
@@ -78,8 +73,8 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 						println!("Now tracking {restored} again.");
 						changed = true;
 						let owner = AddedItem::Restored(owner);
-						if !added.items.contains(&owner) {
-							added.items.push(owner);
+						if !added.contains(&owner) {
+							added.push(owner);
 						}
 					} else {
 						println!("{owner} is already fully tracked; {key} will be synced automatically.");
@@ -91,7 +86,7 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 					config.include_repo(&key);
 					config.pin_repo_with_options(&key, Some(repo.id), submodules);
 					println!("Now tracking {key}.");
-					added.items.push(AddedItem::Pin(key));
+					added.push(AddedItem::Pin(key));
 					changed = true;
 				}
 			}
