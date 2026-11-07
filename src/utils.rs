@@ -1,4 +1,8 @@
-use std::io::{self, Write};
+use std::{
+	fs::{self, File},
+	io::{self, Write},
+	path::Path,
+};
 
 use anyhow::{Context, Error, Result, bail};
 use crossterm::{
@@ -8,6 +12,28 @@ use crossterm::{
 
 pub fn plural(n: usize, singular: &str, plural: &str) -> String {
 	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
+}
+
+/// Writes `contents` to `path` through a temporary file beside it that's renamed into place, so a
+/// crash or a full disk leaves the old file whole instead of truncated. A symlinked `path` is
+/// written through to its target, and the old file's permissions are kept.
+pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
+	let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+	let mut tmp_name = path.file_name().unwrap_or_default().to_owned();
+	tmp_name.push(".tmp");
+	let tmp = path.with_file_name(tmp_name);
+	let write = || {
+		let mut file = File::create(&tmp)?;
+		if let Ok(meta) = fs::metadata(&path) {
+			file.set_permissions(meta.permissions())?;
+		}
+		file.write_all(contents.as_bytes())?;
+		file.sync_all()?;
+		fs::rename(&tmp, &path)
+	};
+	write().inspect_err(|_| {
+		let _ = fs::remove_file(&tmp);
+	})
 }
 
 /// Expands `owner/a,b,c` into one `owner/name` target per repo (repo names can't contain commas).
@@ -85,6 +111,8 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+	use std::{env, path::PathBuf, process};
+
 	use super::*;
 
 	fn args(list: &[&str]) -> Vec<String> {
@@ -118,6 +146,42 @@ mod tests {
 	#[test]
 	fn expand_targets_rejects_empty_list() {
 		assert!(expand_targets(args(&["daisy/,"])).is_err());
+	}
+
+	fn temp_dir(name: &str) -> PathBuf {
+		let dir = env::temp_dir().join(format!("gitkeep-utils-{name}-{}", process::id()));
+		let _ = fs::remove_dir_all(&dir);
+		fs::create_dir_all(&dir).unwrap();
+		dir
+	}
+
+	#[test]
+	fn write_atomic_replaces_contents_and_leaves_no_temp_file() {
+		let dir = temp_dir("replace");
+		let path = dir.join("config.toml");
+		fs::write(&path, "old old old").unwrap();
+		write_atomic(&path, "new").unwrap();
+		assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+		assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn write_atomic_keeps_permissions_and_symlinks() {
+		use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+		let dir = temp_dir("unix");
+		let target = dir.join("real.toml");
+		let link = dir.join("link.toml");
+		fs::write(&target, "old").unwrap();
+		fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+		symlink(&target, &link).unwrap();
+		write_atomic(&link, "new").unwrap();
+		assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+		assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+		assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+		fs::remove_dir_all(&dir).unwrap();
 	}
 
 	#[test]

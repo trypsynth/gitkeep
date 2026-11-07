@@ -18,7 +18,10 @@ pub use self::{
 	account::{HostConfig, PinnedRepo, TrackedAccount},
 	state::State,
 };
-use crate::forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, split_host};
+use crate::{
+	forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, split_host},
+	utils::write_atomic,
+};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -99,7 +102,7 @@ impl Config {
 	pub fn save(&self) -> Result<()> {
 		let path = Self::path()?;
 		let raw = to_string_pretty(self).context("Could not serialize config")?;
-		fs::write(&path, raw).with_context(|| format!("Could not write config to {}", path.display()))
+		write_atomic(&path, &raw).with_context(|| format!("Could not write config to {}", path.display()))
 	}
 
 	pub fn archive_dir(&self) -> Result<PathBuf> {

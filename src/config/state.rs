@@ -10,6 +10,8 @@ use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use toml::{from_str, to_string_pretty};
 
+use crate::utils::write_atomic;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct State {
 	#[serde(default)]
@@ -47,7 +49,7 @@ impl State {
 	pub fn save(&self) -> Result<()> {
 		let path = Self::path()?;
 		let raw = to_string_pretty(self).context("Could not serialize state")?;
-		fs::write(&path, raw).with_context(|| format!("Could not write state to {}", path.display()))
+		write_atomic(&path, &raw).with_context(|| format!("Could not write state to {}", path.display()))
 	}
 
 	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>, id: u64) {
