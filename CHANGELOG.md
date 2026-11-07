@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
 - Fixed `gitkeep add` and `gitkeep sync` listing and syncing accounts before repos instead of in the order you gave them
 - Pinned repos and small accounts are now cloned and pulled in parallel too. Before, only repos under the same account ran at once, so a sync of many pins ran one repo at a time
