@@ -158,7 +158,7 @@ fn run_job(job: &Job, verbosity: Verbosity) -> Outcome {
 			if verbosity == Verbosity::Verbose {
 				println!("Cloning {}...", job.full_name);
 			}
-			clone(job, verbosity, "clone")
+			clone(job, verbosity)
 		}
 		JobKind::Reclone => reclone(job, verbosity),
 		JobKind::Pull => {
@@ -180,19 +180,29 @@ fn run_job(job: &Job, verbosity: Verbosity) -> Outcome {
 	}
 }
 
-/// Removes an existing local clone and clones it fresh, e.g. when the remote history is
-/// gone (exit 128) or `owner/name` now points at an unrelated repo (stored id changed).
+/// Replaces an existing local clone with a fresh one, e.g. when the remote history was rewritten
+/// (exit 128) or `owner/name` now points at an unrelated repo (stored id changed). The new clone
+/// goes beside the old one first, so a failed clone leaves the old copy in place.
 fn reclone(job: &Job, verbosity: Verbosity) -> Outcome {
-	if let Err(e) = fs::remove_dir_all(&job.repo_dir) {
-		return Outcome::Failed(format!("Could not remove {}: {e}.", job.repo_dir.display()));
+	let mut tmp_name = job.repo_dir.file_name().unwrap_or_default().to_owned();
+	tmp_name.push(".gitkeep-reclone");
+	let tmp = job.repo_dir.with_file_name(tmp_name);
+	// Left behind if an earlier re-clone was interrupted.
+	let _ = fs::remove_dir_all(&tmp);
+	if let Err(e) = git_clone(&job.url, &tmp, verbosity) {
+		let _ = fs::remove_dir_all(&tmp);
+		return Outcome::Failed(format!("Failed to re-clone {}, so the old copy was kept: {e:#}.", job.full_name));
 	}
-	clone(job, verbosity, "re-clone")
+	if let Err(e) = fs::remove_dir_all(&job.repo_dir).and_then(|()| fs::rename(&tmp, &job.repo_dir)) {
+		return Outcome::Failed(format!("Could not replace {} with its re-clone: {e}.", job.repo_dir.display()));
+	}
+	Outcome::Cloned { warning: submodules(job, verbosity, "clone") }
 }
 
-fn clone(job: &Job, verbosity: Verbosity, action: &str) -> Outcome {
+fn clone(job: &Job, verbosity: Verbosity) -> Outcome {
 	match git_clone(&job.url, &job.repo_dir, verbosity) {
 		Ok(()) => Outcome::Cloned { warning: submodules(job, verbosity, "clone") },
-		Err(e) => Outcome::Failed(format!("Failed to {action} {}: {e:#}.", job.full_name)),
+		Err(e) => Outcome::Failed(format!("Failed to clone {}: {e:#}.", job.full_name)),
 	}
 }
 
@@ -340,6 +350,38 @@ mod tests {
 				_ => panic!("unexpected outcome for job {i}"),
 			}
 		}
+	}
+
+	#[test]
+	fn reclone_keeps_the_old_copy_when_the_clone_fails_and_replaces_it_when_it_works() {
+		let root = env::temp_dir().join(format!("gitkeep-reclone-test-{}", process::id()));
+		let source = root.join("source");
+		fs::create_dir_all(&source).unwrap();
+		let git = |args: &[&str]| {
+			assert!(Command::new("git").args(args).current_dir(&source).output().unwrap().status.success());
+		};
+		git(&["init", "-q"]);
+		git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+		let repo_dir = root.join("repo");
+		fs::create_dir_all(&repo_dir).unwrap();
+		fs::write(repo_dir.join("old"), "").unwrap();
+		let job = |url: String| Job {
+			full_name: "owner/repo".to_string(),
+			id: 0,
+			pushed_at: None,
+			url,
+			repo_dir: repo_dir.clone(),
+			kind: JobKind::Reclone,
+			submodules: false,
+		};
+		let failed = run_job(&job(root.join("missing").to_string_lossy().into_owned()), Verbosity::Quiet);
+		assert!(matches!(failed, Outcome::Failed(_)));
+		assert!(repo_dir.join("old").exists(), "the old copy survives a failed re-clone");
+		let worked = run_job(&job(source.to_string_lossy().into_owned()), Verbosity::Quiet);
+		assert!(matches!(worked, Outcome::Cloned { warning: None }));
+		assert!(!repo_dir.join("old").exists() && repo_dir.join(".git").exists());
+		assert!(!root.join("repo.gitkeep-reclone").exists());
+		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[test]
