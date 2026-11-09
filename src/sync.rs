@@ -209,15 +209,11 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 	fs::create_dir_all(&archive_dir)
 		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
 	let mut state = State::load()?;
-	let legacy = state.drain_legacy_skipped();
-	if !legacy.is_empty() {
-		config.excluded.extend(legacy);
-	}
+	let mut config_changed = migrate_legacy_skipped(config, &mut state);
 	let mut totals = Totals::default();
 	let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
 	let mut forges: HashMap<Option<String>, Result<Forge>> = HashMap::new();
 	let mut seen = HashSet::new();
-	let mut config_changed = false;
 	let parallel = opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1);
 	// Verbose mode streams git's own output, which would interleave unreadably in parallel.
 	let jobs = if verbosity == Verbosity::Verbose { 1 } else { parallel };
@@ -254,7 +250,7 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 	plan.run(ctx, &mut sync_state);
 	state.save().context("Could not save sync state")?;
 	if config_changed {
-		config.save().context("Could not save config after correcting username casing")?;
+		config.save().context("Could not save config")?;
 	}
 	if verbosity == Verbosity::Normal
 		&& let Some(detail) = build_normal_detail(&totals)
@@ -264,6 +260,15 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 	}
 	println!("{}", build_summary(&totals));
 	Ok(())
+}
+
+/// Moves repos removed by versions that kept them in the sync state into the config. Returns `true`
+/// if any moved, so the config gets saved along with the state they were taken from.
+fn migrate_legacy_skipped(config: &mut Config, state: &mut State) -> bool {
+	let legacy = state.drain_legacy_skipped();
+	let moved = !legacy.is_empty();
+	config.excluded.extend(legacy);
+	moved
 }
 
 /// True when a `sync <target>` argument names this tracked account: a plain name matches
@@ -418,6 +423,17 @@ fn resolve_submodules(force: bool, override_: Option<bool>, global_default: bool
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn legacy_skipped_repos_move_into_config_and_mark_it_changed() {
+		let mut config = Config::default();
+		let mut state = State::default();
+		assert!(!migrate_legacy_skipped(&mut config, &mut state));
+		state.skipped.insert("alice/big".to_string());
+		assert!(migrate_legacy_skipped(&mut config, &mut state));
+		assert!(config.is_excluded("alice/big"));
+		assert!(state.skipped.is_empty());
+	}
 
 	#[test]
 	fn resolve_submodules_uses_global_default_when_no_override_or_force() {
