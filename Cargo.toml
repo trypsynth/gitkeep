@@ -16,12 +16,12 @@ clap = { version = "4.6.7", default-features = false, features = ["std", "derive
 crossterm = "0.29.0"
 dirs = "7.0.0"
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
-octocrab = { version = "0.54.5", default-features = false, features = ["default-client", "rustls", "rustls-ring", "retry", "timeout"] }
-open = "5.4.4"
+octocrab = { version = "0.54.9", default-features = false, features = ["default-client", "rustls", "rustls-ring", "retry", "timeout"] }
+open = "5.4.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.0", features = ["rt", "macros", "sync"] }
-toml = "1.1.8"
+toml = "1.2.1"
 
 [profile.release]
 strip = true
