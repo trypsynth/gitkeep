@@ -9,12 +9,15 @@ pub struct Totals {
 	pub cloned: usize,
 	pub excluded: usize,
 	pub failed: usize,
+	/// Synced before, but no longer listed upstream.
+	pub gone: usize,
 	pub updated_repos: Vec<String>,
 	pub new_repos: Vec<String>,
 }
 
 pub fn build_summary(totals: &Totals) -> String {
-	let total_processed = totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.failed;
+	let total_processed =
+		totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.gone + totals.failed;
 	if total_processed == 0 {
 		return if totals.excluded > 0 { "Done.".to_string() } else { "Nothing to do.".to_string() };
 	}
@@ -27,6 +30,9 @@ pub fn build_summary(totals: &Totals) -> String {
 	}
 	if totals.pulled_up_to_date > 0 {
 		parts.push(format!("{} up to date", plural(totals.pulled_up_to_date, "repo", "repos")));
+	}
+	if totals.gone > 0 {
+		parts.push(format!("{} gone upstream", plural(totals.gone, "repo", "repos")));
 	}
 	if totals.failed > 0 {
 		parts.push(format!("{} failed", plural(totals.failed, "repo", "repos")));

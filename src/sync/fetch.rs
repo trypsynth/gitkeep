@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Write as _, fs};
+use std::{
+	collections::{HashMap, HashSet},
+	fmt::Write as _,
+	fs,
+};
 
 use anyhow::Result;
 use futures_util::{StreamExt as _, stream};
@@ -104,8 +108,25 @@ pub fn sync_one(
 	let add_hint =
 		current.host.as_ref().map_or_else(|| current.name.clone(), |h| format!("https://{h}/{}", current.name));
 	report_found(&account.repos, &current.display_name(), &add_hint, include_forks, ctx.verbosity);
+	report_gone(&current, &account.repos, ctx, sync_state);
 	plan.add(account.repos, include_forks, use_submodules, ctx, config, sync_state);
 	config_changed
+}
+
+/// Reports the repos of `account` that were synced before but that its forge no longer lists, such
+/// as ones deleted or made private. Their local copies stay; they're dropped from the sync state so
+/// each is only reported once.
+fn report_gone(account: &TrackedAccount, listed: &[RemoteRepo], ctx: SyncContext<'_>, sync_state: &mut SyncState<'_>) {
+	let listed: HashSet<&str> = listed.iter().map(|r| r.full_name.as_str()).collect();
+	let gone: Vec<String> =
+		sync_state.state.repos.keys().filter(|k| account.covers(k) && !listed.contains(k.as_str())).cloned().collect();
+	for key in gone {
+		sync_state.state.repos.remove(&key);
+		if archive_path(ctx.archive_dir, &key).exists() {
+			println!("  {key} is gone upstream. The local copy is kept.");
+			sync_state.totals.gone += 1;
+		}
+	}
 }
 
 /// Prints the verbose "Found N repositories" line, with a fork-skip hint when relevant.
@@ -191,7 +212,38 @@ fn resolve_submodules(force: bool, override_: Option<bool>, global_default: bool
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use std::{env, process};
+
+	use super::{super::SyncOptions, *};
+	use crate::{config::State, sync::summary::Totals};
+
+	#[test]
+	fn gone_repos_are_reported_once_and_only_when_a_local_copy_exists() {
+		let root = env::temp_dir().join(format!("gitkeep-gone-test-{}", process::id()));
+		fs::create_dir_all(root.join("alice/old")).unwrap();
+		let mut state = State::default();
+		for key in ["alice/old", "alice/kept", "alice/deleted-locally", "bob/other"] {
+			state.mark_synced(key, None, None);
+		}
+		let mut totals = Totals::default();
+		let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
+		let ctx =
+			SyncContext { archive_dir: &root, opts: SyncOptions::default(), verbosity: Verbosity::Quiet, jobs: 1 };
+		let listed = [RemoteRepo {
+			full_name: "alice/kept".into(),
+			rel_dir: "alice/kept".into(),
+			id: None,
+			pushed_at: None,
+			fork: false,
+			clone_url: None,
+			ssh_url: None,
+		}];
+		report_gone(&TrackedAccount::with_options("alice", false, false), &listed, ctx, &mut sync_state);
+		fs::remove_dir_all(&root).unwrap();
+		assert_eq!(totals.gone, 1);
+		let left: Vec<&String> = state.repos.keys().collect();
+		assert_eq!(left, ["alice/kept", "bob/other"]);
+	}
 
 	#[test]
 	fn resolve_submodules_uses_global_default_when_no_override_or_force() {

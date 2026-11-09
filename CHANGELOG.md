@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Syncs now report repos that a tracked account no longer has upstream, such as deleted or newly private ones, once, and keep their local copies
 - `gitkeep sync` (and the clone after `add`) now exits with an error when any repo fails, so scheduled runs can notice
 - Added gitolite support: `gitkeep add myserver:` tracks every repo your key can read on the gitolite server behind an SSH alias, and `myserver:repo` tracks one. Archives go under the host the alias connects to, and the server can be named either way afterwards
 - Single repos can now be added from any host git can clone from, such as cgit or a bare SSH server, even if it isn't a forge gitkeep knows
