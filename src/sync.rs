@@ -22,6 +22,7 @@ use crate::{
 	config::{Config, State, TrackedAccount},
 	forge::{Forge, split_host},
 	track::{self, AddedItem},
+	utils::plural,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -198,6 +199,10 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 		println!();
 	}
 	println!("{}", build_summary(&totals));
+	// Exiting non-zero lets a scheduled sync tell whoever runs it that something went wrong.
+	if totals.failed > 0 {
+		bail!("{} could not be synced", plural(totals.failed, "repo", "repos"));
+	}
 	Ok(())
 }
 
