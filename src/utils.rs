@@ -1,6 +1,6 @@
 use std::{
 	fs::{self, File},
-	io::{self, Write},
+	io::{self, IsTerminal as _, Write},
 	path::Path,
 };
 
@@ -70,10 +70,15 @@ pub fn ask(message: &str, default: Option<&str>) -> Result<String> {
 	Ok(if answer.is_empty() { default.unwrap_or_default() } else { answer }.to_string())
 }
 
-/// A single-key confirmation prompt that returns immediately on 'y', 'n', or Enter.
+/// A single-key confirmation prompt that returns immediately on 'y', 'n', or Enter. Without a
+/// terminal to read a key from, as in a script, it answers with `default`.
 pub fn confirm(message: &str, default: bool) -> Result<bool> {
 	let hint = if default { "[Y/n]" } else { "[y/N]" };
 	print!("{message} {hint} ");
+	if !io::stdin().is_terminal() {
+		println!("{}", if default { "Yes" } else { "No" });
+		return Ok(default);
+	}
 	io::stdout().flush().context("Could not flush stdout")?;
 	enable_raw_mode().context("Could not enable raw mode")?;
 	let result = loop {
