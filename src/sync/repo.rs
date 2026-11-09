@@ -55,7 +55,6 @@ pub struct Plan {
 }
 
 impl Plan {
-	/// Works out what each of `repos` needs and adds it to the plan.
 	pub fn add(
 		&mut self,
 		repos: Vec<RemoteRepo>,

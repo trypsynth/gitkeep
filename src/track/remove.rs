@@ -98,7 +98,6 @@ fn remove_untracked(
 	Ok(true)
 }
 
-/// Offers to delete the local copy of the pinned repo `full_name`.
 fn delete_pinned_dir(archive_root: &Path, full_name: &str, delete: bool) -> Result<()> {
 	let (parent, name) = parent_and_name(archive_root, full_name);
 	let Some(dir) = find_dir_ignoring_case(&parent, name)? else { return Ok(()) };
@@ -119,7 +118,6 @@ async fn exclude_repo(
 ) -> Result<bool> {
 	let key = target.key();
 	let Some((parent, name)) = key.rsplit_once('/') else { return Ok(false) };
-	// Use the account's canonical casing for the owner part when the repo sits directly under it.
 	let owner_key = owner.display_name();
 	let parent = if parent.eq_ignore_ascii_case(&owner_key) { owner_key } else { parent.to_string() };
 	let local_dir = find_dir_ignoring_case(&archive_path(archive_root, &parent), name)?;

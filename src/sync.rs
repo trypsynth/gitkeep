@@ -59,13 +59,11 @@ struct SyncContext<'a> {
 	jobs: usize,
 }
 
-/// A tracked account or pinned repo to sync.
 enum Item {
 	Account(TrackedAccount),
 	Pin(String),
 }
 
-/// The mutable sync state and running totals threaded through a single run.
 struct SyncState<'a> {
 	state: &'a mut State,
 	totals: &'a mut Totals,

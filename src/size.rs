@@ -52,7 +52,6 @@ fn account_sizes(archive_dir: &Path) -> Result<Vec<(String, u64)>> {
 	Ok(entries)
 }
 
-/// Lists the directories directly under `path` by name.
 fn subdirs(path: &Path) -> Result<Vec<(String, PathBuf)>> {
 	let mut dirs = Vec::new();
 	for entry in fs::read_dir(path).with_context(|| format!("Could not read directory {}", path.display()))? {

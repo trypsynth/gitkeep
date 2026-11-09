@@ -206,7 +206,6 @@ impl Config {
 		changed
 	}
 
-	/// Stops tracking the account `user` on `host` (`None` for GitHub).
 	pub fn remove_account(&mut self, host: Option<&str>, user: &str) -> bool {
 		let before = self.track.len();
 		self.track.retain(|u| !(u.host.as_deref() == host && u.name.eq_ignore_ascii_case(user)));

@@ -16,7 +16,6 @@ pub enum Task<'a> {
 	Pin { full_name: &'a str, stored_id: Option<u64> },
 }
 
-/// A task with what its forge returned.
 pub enum Fetched<'a> {
 	Account(&'a TrackedAccount, Result<AccountRepos>),
 	Pin { full_name: &'a str, stored_id: Option<u64>, repo: Result<Option<RemoteRepo>> },
