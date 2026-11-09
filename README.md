@@ -113,6 +113,41 @@ Stop tracking one or more users, orgs, or repos. Accepts either a plain username
 | `-d, --delete` | Also delete the local archive directory for these targets |
 | `-y, --yes` | Skip all confirmation prompts, assuming "yes" |
 
+## Running on a schedule
+
+`gitkeep sync -q` prints only errors and the final summary, and exits non-zero if any repo failed, so it suits cron and timers. With cron (Linux or macOS), this syncs every night at 4am:
+
+```cron
+0 4 * * * $HOME/.cargo/bin/gitkeep sync -q
+```
+
+Or with a systemd user timer, which catches up on a missed run after the machine was off. Save these two files to `~/.config/systemd/user/`:
+
+```ini
+# gitkeep.service
+[Unit]
+Description=Sync the gitkeep archive
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/gitkeep sync -q
+```
+
+```ini
+# gitkeep.timer
+[Unit]
+Description=Sync the gitkeep archive daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Then run `systemctl --user enable --now gitkeep.timer`, and `loginctl enable-linger` if it should run while you're logged out. Repos cloned over SSH need a key the job can use without a prompt, such as one without a passphrase or one held by an agent the job can reach.
+
 ## Development
 
 Formatting relies on unstable rustfmt options (see `rustfmt.toml`), which stable rustfmt silently ignores. Format with the nightly toolchain:
