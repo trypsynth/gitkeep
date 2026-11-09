@@ -119,20 +119,12 @@ pub async fn run(targets: &[String], opts: SyncOptions, verbosity: Verbosity) ->
 		return run_all(opts, verbosity).await;
 	}
 	let config = Config::load().context("Could not load config")?;
-	let untracked: Vec<String> =
-		targets.iter().filter(|t| matches!(classify(&config, t), Named::Untracked)).cloned().collect();
+	let untracked: Vec<String> = targets.iter().filter(|t| classify(&config, t).is_none()).cloned().collect();
 	if !untracked.is_empty() {
 		track::add(&untracked, false, false, None).await?;
 	}
 	let mut config = Config::load().context("Could not load config")?;
-	let items: Vec<Item> = targets
-		.iter()
-		.filter_map(|target| match classify(&config, target) {
-			Named::Account(account) => Some(Item::Account(account)),
-			Named::Pin(pin) => Some(Item::Pin(pin)),
-			Named::Untracked => None,
-		})
-		.collect();
+	let items: Vec<Item> = targets.iter().filter_map(|target| classify(&config, target)).collect();
 	if items.is_empty() {
 		println!("Nothing to sync.");
 		return Ok(());
@@ -162,27 +154,17 @@ async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 	sync_all(&mut config, &items, opts, verbosity).await
 }
 
-/// What a `sync <target>` argument refers to in the config.
-enum Named {
-	Account(TrackedAccount),
-	Pin(String),
-	Untracked,
-}
-
 /// Matches a `sync` argument against what's tracked. A repo inside a tracked account means that
-/// account, unless the repo was removed from it.
-fn classify(config: &Config, arg: &str) -> Named {
+/// account, unless the repo was removed from it. Returns `None` for anything untracked.
+fn classify(config: &Config, arg: &str) -> Option<Item> {
 	let key = Target::parse(arg).key();
 	if let Some(account) = config.track.iter().find(|u| matches_target(u, &key)) {
-		return Named::Account(account.clone());
+		return Some(Item::Account(account.clone()));
 	}
 	if let Some(pin) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(&key)) {
-		return Named::Pin(pin.full_name.clone());
+		return Some(Item::Pin(pin.full_name.clone()));
 	}
-	match config.track.iter().find(|u| u.covers(&key)) {
-		Some(owner) if !config.is_excluded(&key) => Named::Account(owner.clone()),
-		_ => Named::Untracked,
-	}
+	config.track.iter().find(|u| u.covers(&key)).filter(|_| !config.is_excluded(&key)).cloned().map(Item::Account)
 }
 
 /// Syncs what `gitkeep add` just added, as one run with one summary. `add` has already saved any
@@ -454,9 +436,9 @@ mod tests {
 
 	fn named(config: &Config, arg: &str) -> String {
 		match classify(config, arg) {
-			Named::Account(a) => format!("account {}", a.display_name()),
-			Named::Pin(p) => format!("pin {p}"),
-			Named::Untracked => "untracked".to_string(),
+			Some(Item::Account(a)) => format!("account {}", a.display_name()),
+			Some(Item::Pin(p)) => format!("pin {p}"),
+			None => "untracked".to_string(),
 		}
 	}
 
