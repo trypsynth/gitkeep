@@ -62,6 +62,8 @@ async fn main() -> Result<()> {
 			run_add(users, forks, frozen, submodules, no_submodules, no_sync, sync).await
 		}
 		Commands::Remove { users, delete, yes } => track::remove(&utils::expand_targets(users)?, delete, yes).await,
+		Commands::Freeze { users } => track::set_frozen(&users, true),
+		Commands::Unfreeze { users } => track::set_frozen(&users, false),
 		Commands::List => track::list(),
 		Commands::Size { format, breakdown } => size::run(format, breakdown),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose, jobs } => {

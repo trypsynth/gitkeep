@@ -22,7 +22,7 @@ pub enum Commands {
 		/// Include forked repositories from these accounts
 		#[arg(long)]
 		forks: bool,
-		/// Do not update these accounts in bulk runs after the initial clone
+		/// Do not update these accounts in bulk runs after the initial clone (same as `freeze`)
 		#[arg(long)]
 		frozen: bool,
 		/// Clone submodules for these accounts/repos, overriding the global default
@@ -49,6 +49,16 @@ pub enum Commands {
 		/// Skip all confirmation prompts, assuming "yes"
 		#[arg(short, long)]
 		yes: bool,
+	},
+	/// Skip tracked accounts in bulk syncs; `sync <account>` still updates them
+	Freeze {
+		#[arg(value_name = "ACCOUNT", required = true)]
+		users: Vec<String>,
+	},
+	/// Include frozen accounts in bulk syncs again
+	Unfreeze {
+		#[arg(value_name = "ACCOUNT", required = true)]
+		users: Vec<String>,
 	},
 	/// Show all tracked accounts and repos
 	#[command(alias = "ls")]

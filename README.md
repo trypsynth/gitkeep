@@ -64,7 +64,7 @@ use_ssh = false  # optional: overrides the global SSH setting for this host
 | Flag | Description |
 |------|-------------|
 | `--forks` | Include forked repositories for these accounts |
-| `--frozen` | Track the account but never update it during bulk syncs |
+| `--frozen` | Track the account but never update it during bulk syncs (see `freeze`) |
 | `--submodules` | Clone submodules for these accounts/repos, overriding the global default |
 | `--no-submodules` | Never clone submodules for these accounts/repos, overriding the global default |
 | `--no-sync` | Add to the tracked list without cloning right now, overriding the config default |
@@ -86,6 +86,9 @@ Sync every tracked account that isn't frozen, plus individually tracked repos. P
 By default, repos are cloned and pulled several at a time: one per CPU thread, but at least 4 and at most 16. Set `jobs = <N>` in `~/.gitkeep.toml` to change that for every sync, including the one `add` runs. Use `jobs = 1` if git needs to prompt you for credentials or a key passphrase, since several prompts at once would collide.
 
 A sync that fails to pull an existing repo because it no longer matches what's on GitHub (e.g. the `owner/name` was deleted and recreated as a different repo) automatically deletes the stale local clone and re-clones it.
+
+### `freeze <ACCOUNT>...` / `unfreeze <ACCOUNT>...`
+Stop or resume updating tracked accounts in bulk syncs, without removing them or touching their archives. A frozen account is still updated when you name it, as in `gitkeep sync <account>`, and `list` tags it as frozen. Accounts are given in the same forms as `add`; single repos can't be frozen.
 
 ### `list`  _(alias: `ls`)_
 Show all tracked users and orgs, including any per-account flags, individually tracked repos, and repos removed from tracked accounts.

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added `gitkeep freeze` and `gitkeep unfreeze` to stop or resume bulk syncs of a tracked account without removing and re-adding it
+- Running `gitkeep add` on a frozen account no longer unfreezes it
+
 ## 0.4.1
 
 - Fixed `gitkeep add` and `gitkeep sync` listing and syncing accounts before repos instead of in the order you gave them

@@ -167,29 +167,22 @@ impl Config {
 				entry.name = user.to_string();
 				true
 			};
-			let mut local_changed = if forks && !entry.forks {
+			let enable_forks = forks && !entry.forks;
+			let freeze = frozen && !entry.frozen;
+			if enable_forks {
 				entry.forks = true;
 				println!("Forks enabled for {display}.");
-				true
-			} else {
-				false
-			};
-			if frozen && !entry.frozen {
+			}
+			if freeze {
 				entry.frozen = true;
 				println!("Account frozen for {display}. Updates will be skipped.");
-				local_changed = true;
-			} else if !frozen && entry.frozen {
-				entry.frozen = false;
-				println!("Account unfrozen for {display}. Updates will be included.");
-				local_changed = true;
 			}
-			if let Some(submodules) = submodules
-				&& entry.submodules != Some(submodules)
-			{
+			let set_submodules = submodules.filter(|&s| entry.submodules != Some(s));
+			if let Some(submodules) = set_submodules {
 				entry.submodules = Some(submodules);
 				println!("Submodules {} for {display}.", if submodules { "enabled" } else { "disabled" });
-				local_changed = true;
 			}
+			let local_changed = enable_forks || freeze || set_submodules.is_some();
 			if !local_changed && !canonical_changed {
 				println!("Already tracking {display}.");
 			}
@@ -443,6 +436,14 @@ mod tests {
 		let changed = config.add_account(None, "alice", false, false, Some(false));
 		assert!(changed);
 		assert_eq!(config.track[0].submodules, Some(false));
+	}
+
+	#[test]
+	fn add_account_without_frozen_keeps_existing_entry_frozen() {
+		let mut config = Config::default();
+		config.add_account(None, "alice", false, true, None);
+		config.add_account(None, "alice", false, false, Some(true));
+		assert!(config.track[0].frozen);
 	}
 
 	#[test]
