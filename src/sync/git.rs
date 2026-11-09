@@ -8,8 +8,16 @@ use anyhow::{Context, Error, Result, anyhow, bail};
 
 use super::Verbosity;
 
+/// A git command that fails instead of stopping to ask for a username or password, which would hang
+/// a sync and garble the terminal when several run at once. Saved credential helpers still work.
+fn git() -> Command {
+	let mut cmd = Command::new("git");
+	cmd.env("GIT_TERMINAL_PROMPT", "0");
+	cmd
+}
+
 pub fn git_head(repo_dir: &Path) -> Option<String> {
-	let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo_dir).output().ok()?;
+	let out = git().args(["rev-parse", "HEAD"]).current_dir(repo_dir).output().ok()?;
 	if out.status.success() { Some(String::from_utf8_lossy(&out.stdout).trim().to_string()) } else { None }
 }
 
@@ -22,7 +30,7 @@ pub enum PullOutcome {
 
 pub fn git_pull(repo_dir: &Path, verbosity: Verbosity) -> PullOutcome {
 	let head_before = git_head(repo_dir);
-	let output = match Command::new("git").arg("pull").current_dir(repo_dir).output() {
+	let output = match git().arg("pull").current_dir(repo_dir).output() {
 		Ok(out) => out,
 		Err(e) => {
 			return PullOutcome::Failed(
@@ -84,7 +92,7 @@ pub fn run_git(mut cmd: Command, verbosity: Verbosity, action: &str) -> Result<(
 }
 
 pub fn git_clone(url: &str, dest: &Path, verbosity: Verbosity) -> Result<()> {
-	let mut cmd = Command::new("git");
+	let mut cmd = git();
 	cmd.args(["clone", "--", url]).arg(dest);
 	run_git(cmd, verbosity, "git clone")
 }
@@ -95,7 +103,7 @@ pub fn update_submodules(repo_dir: &Path, verbosity: Verbosity) -> Result<()> {
 	if !repo_dir.join(".gitmodules").exists() {
 		return Ok(());
 	}
-	let mut cmd = Command::new("git");
+	let mut cmd = git();
 	cmd.args(["submodule", "update", "--init", "--recursive"]).current_dir(repo_dir);
 	run_git(cmd, verbosity, "git submodule update")
 }
