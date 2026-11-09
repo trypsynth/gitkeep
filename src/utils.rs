@@ -37,20 +37,21 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
 }
 
 /// Expands `owner/a,b,c` into one `owner/name` target per repo (repo names can't contain commas).
-/// The list follows the last `/`, so `host/group/a,b` works for GitLab too. Other targets pass
-/// through unchanged.
+/// The list follows the last `/` (or the `:` of `alias:a,b`), so `host/group/a,b` works for GitLab
+/// too. Other targets pass through unchanged.
 pub fn expand_targets(args: Vec<String>) -> Result<Vec<String>> {
 	let mut out = Vec::with_capacity(args.len());
 	for target in args {
-		let Some((owner, list)) = target.rsplit_once('/').filter(|(_, rest)| rest.contains(',')) else {
+		let Some(at) = target.rfind(['/', ':']).filter(|&at| target[at..].contains(',')) else {
 			out.push(target);
 			continue;
 		};
+		let (owner, list) = target.split_at(at + 1);
 		let names: Vec<&str> = list.split(',').map(str::trim).filter(|n| !n.is_empty()).collect();
 		if names.is_empty() {
 			bail!("'{target}' doesn't list any repos");
 		}
-		out.extend(names.into_iter().map(|name| format!("{owner}/{name}")));
+		out.extend(names.into_iter().map(|name| format!("{owner}{name}")));
 	}
 	Ok(out)
 }
@@ -133,6 +134,11 @@ mod tests {
 	#[test]
 	fn expand_targets_expands_comma_list() {
 		assert_eq!(expand_targets(args(&["daisy/a,b,c"])).unwrap(), args(&["daisy/a", "daisy/b", "daisy/c"]));
+	}
+
+	#[test]
+	fn expand_targets_expands_ssh_alias_list() {
+		assert_eq!(expand_targets(args(&["chats:src,txt"])).unwrap(), args(&["chats:src", "chats:txt"]));
 	}
 
 	#[test]

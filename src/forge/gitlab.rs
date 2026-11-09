@@ -118,7 +118,7 @@ impl GitLab {
 		RemoteRepo {
 			rel_dir: full_name.clone(),
 			full_name,
-			id: project.id,
+			id: Some(project.id),
 			// GitLab's `last_activity_at` updates at most once an hour, so using it to skip pulls could
 			// miss recent pushes. Leaving this unset makes every sync pull.
 			pushed_at: None,

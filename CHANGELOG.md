@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added gitolite support: `gitkeep add myserver:` tracks every repo your key can read on the gitolite server behind an SSH alias, and `myserver:repo` tracks one. Archives go under the host the alias connects to, and the server can be named either way afterwards
+
 ## 0.4.2
 
 - Added `gitkeep freeze` and `gitkeep unfreeze` to stop or resume bulk syncs of a tracked account without removing and re-adding it

@@ -19,7 +19,7 @@ pub use self::{
 	state::State,
 };
 use crate::{
-	forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, split_host},
+	forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, Gitolite, Target, display_name, split_host},
 	utils::write_atomic,
 };
 
@@ -80,7 +80,7 @@ impl Config {
 		for (host, token) in mem::take(&mut self.gitlab_tokens) {
 			self.hosts
 				.entry(host)
-				.or_insert(HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None })
+				.or_insert(HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None, ssh_alias: None })
 				.token = Some(token);
 		}
 		let used = self
@@ -90,7 +90,12 @@ impl Config {
 			.chain(self.pinned.iter().filter_map(|p| split_host(&p.full_name).map(|(h, _)| h.to_string())))
 			.collect::<Vec<_>>();
 		for host in used {
-			self.hosts.entry(host).or_insert(HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None });
+			self.hosts.entry(host).or_insert(HostConfig {
+				kind: ForgeKind::GitLab,
+				token: None,
+				use_ssh: None,
+				ssh_alias: None,
+			});
 		}
 	}
 
@@ -135,6 +140,21 @@ impl Config {
 		)
 	}
 
+	/// Parses a command-line target, pointing an `alias:path` target at the host it was added under.
+	pub fn target(&self, arg: &str) -> Target {
+		let mut target = Target::parse(arg);
+		if let Some(alias) = &target.ssh_alias
+			&& let Some(host) = self
+				.hosts
+				.iter()
+				.find(|(host, entry)| entry.ssh_alias.as_ref() == Some(alias) || *host == alias)
+				.map(|(host, _)| host.clone())
+		{
+			target.host = Some(host);
+		}
+		target
+	}
+
 	/// Connects to the forge at `host` (`None` for GitHub). The host must already be in `hosts`.
 	pub fn forge(&self, host: Option<&str>) -> Result<Forge> {
 		let Some(host) = host else {
@@ -146,6 +166,7 @@ impl Config {
 		match entry.kind {
 			ForgeKind::GitLab => Ok(Forge::GitLab(GitLab::new(host, entry.token.as_deref())?)),
 			ForgeKind::Forgejo => Ok(Forge::Forgejo(Forgejo::new(host, entry.token.as_deref())?)),
+			ForgeKind::Gitolite => Ok(Forge::Gitolite(Gitolite::new(host, entry.ssh_alias.as_deref().unwrap_or(host)))),
 		}
 	}
 
@@ -157,7 +178,7 @@ impl Config {
 		frozen: bool,
 		submodules: Option<bool>,
 	) -> bool {
-		let display = host.map_or_else(|| user.to_string(), |h| format!("{h}/{user}"));
+		let display = display_name(host, user);
 		let changed = if let Some(entry) =
 			self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user) && u.host.as_deref() == host)
 		{
@@ -209,7 +230,7 @@ impl Config {
 	pub fn remove_account(&mut self, host: Option<&str>, user: &str) -> bool {
 		let before = self.track.len();
 		self.track.retain(|u| !(u.host.as_deref() == host && u.name.eq_ignore_ascii_case(user)));
-		let display = host.map_or_else(|| user.to_string(), |h| format!("{h}/{user}"));
+		let display = display_name(host, user);
 		if self.track.len() < before {
 			println!("Stopped tracking {display}.");
 			true
@@ -622,7 +643,7 @@ mod tests {
 		let mut config = Config::default();
 		config.hosts.insert(
 			"git.example.org".to_string(),
-			HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()), use_ssh: None },
+			HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()), use_ssh: None, ssh_alias: None },
 		);
 		config.add_account(Some("git.example.org"), "grp", false, false, None);
 		config.migrate_legacy_hosts();
@@ -634,11 +655,11 @@ mod tests {
 		let mut config = Config { use_ssh: true, ..Config::default() };
 		config.hosts.insert(
 			"gitea.example.com".to_string(),
-			HostConfig { kind: ForgeKind::Forgejo, token: None, use_ssh: Some(false) },
+			HostConfig { kind: ForgeKind::Forgejo, token: None, use_ssh: Some(false), ssh_alias: None },
 		);
 		config.hosts.insert(
 			"gitlab.example.com".to_string(),
-			HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None },
+			HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None, ssh_alias: None },
 		);
 		assert!(!config.use_ssh_for("gitea.example.com/alice/repo"));
 		assert!(config.use_ssh_for("gitlab.example.com/grp/proj"));
@@ -647,8 +668,19 @@ mod tests {
 
 	#[test]
 	fn host_use_ssh_omitted_from_toml_when_none() {
-		let host = HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None };
+		let host = HostConfig { kind: ForgeKind::GitLab, token: None, use_ssh: None, ssh_alias: None };
 		assert!(!to_string(&host).unwrap().contains("use_ssh"));
+	}
+
+	#[test]
+	fn target_maps_a_known_ssh_alias_to_its_host() {
+		let mut config = Config::default();
+		let host =
+			HostConfig { kind: ForgeKind::Gitolite, token: None, use_ssh: None, ssh_alias: Some("chats".to_string()) };
+		config.hosts.insert("home.example.com".to_string(), host);
+		assert_eq!(config.target("chats:src").key(), "home.example.com/src");
+		assert_eq!(config.target("chats:").key(), "home.example.com");
+		assert_eq!(config.target("other:src").key(), "other/src", "unknown aliases are left for add");
 	}
 
 	#[test]

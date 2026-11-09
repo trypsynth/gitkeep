@@ -17,7 +17,8 @@ pub async fn remove(targets: &[String], delete_dir: bool, yes: bool) -> Result<(
 	let archive_root = config.archive_dir()?;
 	let mut changed = false;
 	for arg in targets {
-		changed |= remove_one(&mut config, &archive_root, &Target::parse(arg), delete_dir, yes).await?;
+		let target = config.target(arg);
+		changed |= remove_one(&mut config, &archive_root, &target, delete_dir, yes).await?;
 	}
 	if changed {
 		config.save()?;
@@ -52,9 +53,7 @@ async fn remove_one(
 		delete_pinned_dir(archive_root, &pin, delete_dir || yes)?;
 		return Ok(true);
 	}
-	if target.path.contains('/')
-		&& let Some(owner) = config.track.iter().find(|u| u.covers(&key)).cloned()
-	{
+	if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).cloned() {
 		return exclude_repo(config, archive_root, &owner, target, delete_dir || yes).await;
 	}
 	remove_untracked(config, archive_root, &key, target, delete_dir, yes)

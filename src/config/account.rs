@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::forge::{ForgeKind, split_host};
+use crate::forge::{ForgeKind, display_name, split_host};
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(v: &bool) -> bool {
@@ -17,6 +17,10 @@ pub struct HostConfig {
 	/// inherits it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub use_ssh: Option<bool>,
+	/// The SSH config alias that reaches this host, when it's added as `alias:path`. Cloning and
+	/// listing go through it, so its port, user and key settings apply.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ssh_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +47,7 @@ impl TrackedAccount {
 	}
 
 	pub fn display_name(&self) -> String {
-		self.host.as_ref().map_or_else(|| self.name.clone(), |h| format!("{h}/{}", self.name))
+		display_name(self.host.as_deref(), &self.name)
 	}
 
 	/// Whether this account's sync already includes `full_name`, including projects in GitLab
@@ -52,12 +56,13 @@ impl TrackedAccount {
 		match (&self.host, split_host(full_name)) {
 			(Some(h), Some((host, path))) => {
 				h == host
-					&& path.rsplit_once('/').is_some_and(|(owner, _)| {
-						// The owner is the account itself or one of its subgroups (`name/...`).
-						let n = self.name.len();
-						owner.get(..n).is_some_and(|head| head.eq_ignore_ascii_case(&self.name))
-							&& matches!(owner.as_bytes().get(n), None | Some(b'/'))
-					})
+					&& (self.name.is_empty()
+						|| path.rsplit_once('/').is_some_and(|(owner, _)| {
+							// The owner is the account itself or one of its subgroups (`name/...`).
+							let n = self.name.len();
+							owner.get(..n).is_some_and(|head| head.eq_ignore_ascii_case(&self.name))
+								&& matches!(owner.as_bytes().get(n), None | Some(b'/'))
+						}))
 			}
 			(None, None) => full_name.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(&self.name)),
 			_ => false,
@@ -215,5 +220,18 @@ mod tests {
 			..TrackedAccount::with_options("grp", false, false)
 		};
 		assert!(!user.covers("gitlab.example.com/grpx/proj"));
+	}
+
+	#[test]
+	fn nameless_account_covers_and_is_named_after_its_whole_host() {
+		let server = TrackedAccount {
+			host: Some("home.example.com".to_string()),
+			..TrackedAccount::with_options("", false, false)
+		};
+		assert_eq!(server.display_name(), "home.example.com");
+		assert!(server.covers("home.example.com/src"));
+		assert!(server.covers("home.example.com/tools/txt"));
+		assert!(!server.covers("other.example.com/src"));
+		assert!(!server.covers("src/repo"));
 	}
 }

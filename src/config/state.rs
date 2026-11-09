@@ -70,8 +70,8 @@ impl State {
 		write_atomic(&path, &raw).with_context(|| format!("Could not write state to {}", path.display()))
 	}
 
-	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>, id: u64) {
-		self.repos.insert(full_name.to_string(), RepoState { pushed_at, id: Some(id) });
+	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>, id: Option<u64>) {
+		self.repos.insert(full_name.to_string(), RepoState { pushed_at, id });
 	}
 
 	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
@@ -112,7 +112,7 @@ mod tests {
 	fn state_mark_synced_stores_pushed_at() {
 		let mut state = State::default();
 		let t = Utc::now();
-		state.mark_synced("user/repo", Some(t), 1);
+		state.mark_synced("user/repo", Some(t), Some(1));
 		let stored = state.repos["user/repo"].pushed_at;
 		assert!(stored.is_some());
 	}
@@ -120,14 +120,14 @@ mod tests {
 	#[test]
 	fn state_mark_synced_stores_none_pushed_at() {
 		let mut state = State::default();
-		state.mark_synced("user/repo", None, 1);
+		state.mark_synced("user/repo", None, Some(1));
 		assert!(state.repos["user/repo"].pushed_at.is_none());
 	}
 
 	#[test]
 	fn state_mark_synced_stores_id() {
 		let mut state = State::default();
-		state.mark_synced("user/repo", None, 42);
+		state.mark_synced("user/repo", None, Some(42));
 		assert_eq!(state.repos["user/repo"].id, Some(42));
 	}
 

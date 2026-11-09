@@ -125,7 +125,7 @@ impl Forgejo {
 		RemoteRepo {
 			rel_dir: full_name.clone(),
 			full_name,
-			id: repo.id,
+			id: Some(repo.id),
 			// The API has no push timestamp (`updated_at` also moves for other changes, and isn't
 			// guaranteed to move on every push), so every sync pulls.
 			pushed_at: None,

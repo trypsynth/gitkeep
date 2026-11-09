@@ -1,10 +1,10 @@
 use std::collections::{HashMap, hash_map::Entry};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::{
 	config::{Config, HostConfig, TrackedAccount},
-	forge::{self, Forge, Resolved, Target},
+	forge::{self, Forge, ForgeKind, Gitolite, Resolved, Target},
 	utils::confirm,
 };
 
@@ -19,27 +19,16 @@ pub enum AddedItem {
 }
 
 /// Adds accounts and repos from any forge. Each target is a GitHub name (`owner` or
-/// `owner/repo`), a host-qualified name (`host/path`), or a URL. The first time a host is seen, its
-/// forge kind is detected and recorded.
+/// `owner/repo`), a host-qualified name (`host/path`), a URL, or an SSH alias and path
+/// (`alias:path`). The first time a host is seen, its forge kind is detected and recorded.
 pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<Vec<AddedItem>> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let mut forges: HashMap<Option<String>, Forge> = HashMap::new();
 	let mut resolved = Vec::with_capacity(targets.len());
 	for arg in targets {
-		let target = Target::parse(arg);
-		if let Some(host) = &target.host
-			&& !config.hosts.contains_key(host)
-		{
-			let kind = forge::detect(host).await?;
-			// Scripts get the global setting, since `confirm` answers with its default without a
-			// terminal. An answer that matches the global setting isn't stored, so the host keeps
-			// following it if it changes.
-			let use_ssh = Some(confirm(&format!("Use SSH clone URLs for {host}?"), config.use_ssh)?)
-				.filter(|&ssh| ssh != config.use_ssh);
-			config.hosts.insert(host.clone(), HostConfig { kind, token: None, use_ssh });
-			changed = true;
-		}
+		let mut target = config.target(arg);
+		changed |= register_host(&mut config, &mut target).await?;
 		let forge = match forges.entry(target.host.clone()) {
 			Entry::Occupied(e) => e.into_mut(),
 			Entry::Vacant(e) => e.insert(config.forge(target.host.as_deref())?),
@@ -78,7 +67,7 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 				} else {
 					// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
 					config.include_repo(&key);
-					config.pin_repo_with_options(&key, Some(repo.id), submodules);
+					config.pin_repo_with_options(&key, repo.id, submodules);
 					println!("Now tracking {key}.");
 					added.push(AddedItem::Pin(key));
 					changed = true;
@@ -90,4 +79,36 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 		config.save()?;
 	}
 	Ok(added)
+}
+
+/// Records which forge `target`'s host runs the first time something is added from it, and points
+/// an `alias:path` target at the host its alias connects to. Returns `true` if the config changed.
+async fn register_host(config: &mut Config, target: &mut Target) -> Result<bool> {
+	let Some(host) = target.host.clone().filter(|h| !config.hosts.contains_key(h)) else { return Ok(false) };
+	if let Some(alias) = target.ssh_alias.clone() {
+		let host = forge::ssh_hostname(&alias).await?;
+		target.host = Some(host.clone());
+		if let Some(entry) = config.hosts.get_mut(&host) {
+			// Already added another way; remember the alias so it can name things from now on.
+			let new_alias = entry.ssh_alias.is_none() && alias != host;
+			if new_alias {
+				entry.ssh_alias = Some(alias);
+			}
+			return Ok(new_alias);
+		}
+		if !Gitolite::detect(&alias).await {
+			bail!("'ssh {alias} info' didn't answer like a gitolite server, so gitkeep can't list {host}'s repos.");
+		}
+		let ssh_alias = (alias != host).then_some(alias);
+		config.hosts.insert(host, HostConfig { kind: ForgeKind::Gitolite, token: None, use_ssh: None, ssh_alias });
+		return Ok(true);
+	}
+	let kind = forge::detect(&host).await?;
+	// Scripts get the global setting, since `confirm` answers with its default without a terminal.
+	// An answer that matches the global setting isn't stored, so the host keeps following it if it
+	// changes.
+	let use_ssh =
+		Some(confirm(&format!("Use SSH clone URLs for {host}?"), config.use_ssh)?).filter(|&ssh| ssh != config.use_ssh);
+	config.hosts.insert(host, HostConfig { kind, token: None, use_ssh, ssh_alias: None });
+	Ok(true)
 }

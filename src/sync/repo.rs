@@ -20,7 +20,7 @@ use crate::{config::Config, forge::RemoteRepo};
 /// A clone or pull that a repo needs, decided before any git command runs.
 struct Job {
 	full_name: String,
-	id: u64,
+	id: Option<u64>,
 	pushed_at: Option<DateTime<Utc>>,
 	url: String,
 	repo_dir: PathBuf,
@@ -91,7 +91,7 @@ impl Plan {
 			}
 			let kind = if already_cloned {
 				let stored = sync_state.state.repos.get(full_name);
-				if stored.and_then(|s| s.id).is_some_and(|stored_id| stored_id != repo.id) {
+				if stored.and_then(|s| s.id).zip(repo.id).is_some_and(|(stored_id, id)| stored_id != id) {
 					if ctx.verbosity != Verbosity::Quiet {
 						println!("  {full_name} was recreated as a different repository, re-cloning...");
 					}
@@ -272,7 +272,7 @@ mod tests {
 		RemoteRepo {
 			full_name: name.into(),
 			rel_dir: name.into(),
-			id: 1,
+			id: Some(1),
 			pushed_at: None,
 			fork: false,
 			clone_url: Some(format!("https://example.com/{name}.git")),
@@ -327,7 +327,7 @@ mod tests {
 		git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
 		let job = |i: usize, url: &str| Job {
 			full_name: format!("owner/repo{i}"),
-			id: 0,
+			id: None,
 			pushed_at: None,
 			url: url.to_string(),
 			repo_dir: root.join(format!("repo{i}")),
@@ -366,7 +366,7 @@ mod tests {
 		fs::write(repo_dir.join("old"), "").unwrap();
 		let job = |url: String| Job {
 			full_name: "owner/repo".to_string(),
-			id: 0,
+			id: None,
 			pushed_at: None,
 			url,
 			repo_dir: repo_dir.clone(),

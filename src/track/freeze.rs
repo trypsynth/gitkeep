@@ -8,7 +8,8 @@ pub fn set_frozen(targets: &[String], frozen: bool) -> Result<()> {
 	let mut changed = false;
 	let mut unknown = 0;
 	for arg in targets {
-		match set_one(&mut config, &Target::parse(arg), frozen) {
+		let target = config.target(arg);
+		match set_one(&mut config, &target, frozen) {
 			Some(c) => changed |= c,
 			None => unknown += 1,
 		}

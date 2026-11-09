@@ -4,16 +4,21 @@
 mod forgejo;
 mod github;
 mod gitlab;
+mod gitolite;
 mod http;
 
-use std::path::{Path, PathBuf};
+use std::{
+	path::{Path, PathBuf},
+	process::Stdio,
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 
 use self::http::Http;
-pub use self::{forgejo::Forgejo, github::GitHub, gitlab::GitLab};
+pub use self::{forgejo::Forgejo, github::GitHub, gitlab::GitLab, gitolite::Gitolite};
 
 /// The kind of software a self-hosted forge runs, which decides the API gitkeep speaks to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +26,8 @@ pub use self::{forgejo::Forgejo, github::GitHub, gitlab::GitLab};
 pub enum ForgeKind {
 	GitLab,
 	Forgejo,
+	/// Reached over SSH only, where `ssh <host> info` lists the repos you can read.
+	Gitolite,
 }
 
 /// A connected forge. Every forge answers the same questions, so sync, add, and remove never need
@@ -29,6 +36,7 @@ pub enum Forge {
 	GitHub(GitHub),
 	GitLab(GitLab),
 	Forgejo(Forgejo),
+	Gitolite(Gitolite),
 }
 
 /// What an `add` target turned out to be.
@@ -52,7 +60,9 @@ pub struct AccountRepos {
 pub struct RemoteRepo {
 	pub full_name: String,
 	pub rel_dir: String,
-	pub id: u64,
+	/// Stable id on the forge, used to follow renames and spot recreated repos. Plain git hosts and
+	/// gitolite don't have one.
+	pub id: Option<u64>,
 	/// When the repo was last pushed to, if the forge reports it reliably. `None` makes every sync
 	/// pull the repo rather than skipping it as unchanged.
 	pub pushed_at: Option<DateTime<Utc>>,
@@ -74,6 +84,7 @@ impl Forge {
 			Self::GitHub(f) => f.resolve(path).await,
 			Self::GitLab(f) => f.resolve(path).await,
 			Self::Forgejo(f) => f.resolve(path).await,
+			Self::Gitolite(f) => f.resolve(path).await,
 		}
 	}
 
@@ -83,6 +94,7 @@ impl Forge {
 			Self::GitHub(f) => f.account(name, id).await,
 			Self::GitLab(f) => f.account(name).await,
 			Self::Forgejo(f) => f.account(name).await,
+			Self::Gitolite(f) => f.account(name).await,
 		}
 	}
 
@@ -92,6 +104,7 @@ impl Forge {
 			Self::GitHub(f) => f.repo(path, id).await,
 			Self::GitLab(f) => f.repo(path).await,
 			Self::Forgejo(f) => f.repo(path, id).await,
+			Self::Gitolite(f) => f.repo(path).await,
 		}
 	}
 }
@@ -114,26 +127,66 @@ pub async fn detect(host: &str) -> Result<ForgeKind> {
 pub struct Target {
 	pub host: Option<String>,
 	pub path: String,
+	/// The SSH config alias of an `alias:path` target. Until `Config::target` or `add` maps it to
+	/// the host it reaches, `host` holds the alias itself.
+	pub ssh_alias: Option<String>,
 }
 
 impl Target {
-	/// Accepts a URL (`https://host/path`), a host-qualified name (`host/path`), or a plain GitHub
-	/// name (`owner` or `owner/repo`). github.com URLs become plain GitHub names.
+	/// Accepts a URL (`https://host/path`), an SSH alias and path (`alias:path`, or `alias:` for
+	/// everything on a gitolite server), a host-qualified name (`host/path`, or a bare `host`), or a
+	/// plain GitHub name (`owner` or `owner/repo`). github.com URLs become plain GitHub names.
 	pub fn parse(arg: &str) -> Self {
 		if let Some((host, path)) = parse_url(arg) {
 			let host = (host != "github.com").then_some(host);
-			return Self { host, path };
+			return Self { host, path, ssh_alias: None };
+		}
+		// GitHub names and host names never contain a colon, so this can't be mistaken for either.
+		if let Some((alias, path)) = arg.split_once(':')
+			&& !alias.is_empty()
+			&& !alias.contains('/')
+		{
+			let path = path.trim_matches('/');
+			let path = path.strip_suffix(".git").unwrap_or(path);
+			return Self { host: Some(alias.to_string()), path: path.to_string(), ssh_alias: Some(alias.to_string()) };
 		}
 		match split_host(arg) {
-			Some((host, path)) => Self { host: Some(host.to_lowercase()), path: path.to_string() },
-			None => Self { host: None, path: arg.to_string() },
+			Some((host, path)) => Self { host: Some(host.to_lowercase()), path: path.to_string(), ssh_alias: None },
+			// A bare host, since GitHub names can't contain dots: everything on it.
+			None if arg.contains('.') && !arg.contains('/') => {
+				Self { host: Some(arg.to_lowercase()), path: String::new(), ssh_alias: None }
+			}
+			None => Self { host: None, path: arg.to_string(), ssh_alias: None },
 		}
 	}
 
-	/// The target's key in the config and in output: `path` on GitHub, `host/path` elsewhere.
+	/// The target's key in the config and in output: `path` on GitHub, `host/path` elsewhere, or just
+	/// `host` for everything on it.
 	pub fn key(&self) -> String {
-		self.host.as_ref().map_or_else(|| self.path.clone(), |h| format!("{h}/{}", self.path))
+		display_name(self.host.as_deref(), &self.path)
 	}
+}
+
+/// The host an SSH alias connects to, from `ssh -G`, which only reads the SSH config. Archives are
+/// stored under it rather than the alias, since a dotless alias would share a folder with the
+/// GitHub account of the same name.
+pub async fn ssh_hostname(alias: &str) -> Result<String> {
+	let output = Command::new("ssh")
+		.args(["-G", alias])
+		.stdin(Stdio::null())
+		.output()
+		.await
+		.context("Could not run 'ssh'. Is it installed and on your PATH?")?;
+	let config = String::from_utf8_lossy(&output.stdout);
+	let Some(host) = config.lines().find_map(|l| l.strip_prefix("hostname ")).map(str::to_lowercase) else {
+		bail!("Could not work out which host '{alias}' connects to from your SSH config.");
+	};
+	if !host.contains('.') {
+		bail!(
+			"'{alias}' connects to '{host}', which isn't a full host name. Set HostName to one (or an IP address) in your SSH config."
+		);
+	}
+	Ok(host)
 }
 
 /// Parses an `https://host/path` (or `http://`) argument into `(host, path)`, trimming trailing
@@ -157,6 +210,16 @@ pub fn archive_path(root: &Path, key: &str) -> PathBuf {
 	path
 }
 
+/// How an account is named in output and on the command line. An account with no name on a host is
+/// everything readable there, as on a gitolite server.
+pub fn display_name(host: Option<&str>, name: &str) -> String {
+	match host {
+		Some(h) if name.is_empty() => h.to_string(),
+		Some(h) => format!("{h}/{name}"),
+		None => name.to_string(),
+	}
+}
+
 /// Splits a host-qualified key (`host/namespace/project`) into host and path. GitHub keys
 /// (`owner/repo`) return `None`: GitHub usernames can't contain dots while hosts always do, so the
 /// first segment tells them apart.
@@ -170,7 +233,22 @@ mod tests {
 	use super::*;
 
 	fn target(host: Option<&str>, path: &str) -> Target {
-		Target { host: host.map(ToString::to_string), path: path.to_string() }
+		Target { host: host.map(ToString::to_string), path: path.to_string(), ssh_alias: None }
+	}
+
+	#[test]
+	fn target_parses_ssh_alias_and_path() {
+		let ssh = |alias: &str, path: &str| Target {
+			host: Some(alias.to_string()),
+			path: path.to_string(),
+			ssh_alias: Some(alias.to_string()),
+		};
+		assert_eq!(Target::parse("chats:src"), ssh("chats", "src"));
+		assert_eq!(Target::parse("chats:"), ssh("chats", ""));
+		assert_eq!(Target::parse("git@host.example:/grp/repo.git"), ssh("git@host.example", "grp/repo"));
+		assert_eq!(Target::parse("https://gitlab.com/grp"), target(Some("gitlab.com"), "grp"));
+		assert_eq!(target(Some("home.example.com"), "").key(), "home.example.com");
+		assert_eq!(Target::parse("Home.Example.com"), target(Some("home.example.com"), ""));
 	}
 
 	#[test]

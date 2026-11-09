@@ -20,7 +20,7 @@ use self::{
 };
 use crate::{
 	config::{Config, State, TrackedAccount},
-	forge::{Forge, Target, split_host},
+	forge::{Forge, split_host},
 	track::{self, AddedItem},
 };
 
@@ -114,7 +114,7 @@ async fn run_all(opts: SyncOptions, verbosity: Verbosity) -> Result<()> {
 /// Matches a `sync` argument against what's tracked. A repo inside a tracked account means that
 /// account, unless the repo was removed from it. Returns `None` for anything untracked.
 fn classify(config: &Config, arg: &str) -> Option<Item> {
-	let key = Target::parse(arg).key();
+	let key = config.target(arg).key();
 	if let Some(account) = config.track.iter().find(|u| matches_target(u, &key)) {
 		return Some(Item::Account(account.clone()));
 	}
@@ -213,11 +213,7 @@ fn migrate_legacy_skipped(config: &mut Config, state: &mut State) -> bool {
 /// True when a `sync <target>` argument names this tracked account: a plain name matches
 /// a GitHub account, a `host/path` name matches an account on that host.
 fn matches_target(user: &TrackedAccount, target: &str) -> bool {
-	if let Some((host, path)) = split_host(target) {
-		user.host.as_deref() == Some(host) && user.name.eq_ignore_ascii_case(path)
-	} else {
-		user.host.is_none() && user.name.eq_ignore_ascii_case(target)
-	}
+	user.display_name().eq_ignore_ascii_case(target)
 }
 
 #[cfg(test)]

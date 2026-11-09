@@ -145,7 +145,7 @@ fn remote_repo(repo: &Repository, owner: &str) -> RemoteRepo {
 	RemoteRepo {
 		full_name: repo.full_name.clone().unwrap_or_else(|| format!("{owner}/{}", repo.name)),
 		rel_dir: format!("{owner}/{}", repo.name),
-		id: repo.id.into_inner(),
+		id: Some(repo.id.into_inner()),
 		pushed_at: repo.pushed_at,
 		fork: repo.fork.unwrap_or(false),
 		clone_url: repo.clone_url.as_ref().map(ToString::to_string),

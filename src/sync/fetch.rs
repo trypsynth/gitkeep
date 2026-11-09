@@ -172,10 +172,11 @@ pub fn sync_one_pinned(
 		}
 		config.rename_pin(full_name, &repo.full_name);
 	}
-	if stored_id != Some(repo.id)
+	if repo.id.is_some()
+		&& stored_id != repo.id
 		&& let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name == repo.full_name)
 	{
-		pin.id = Some(repo.id);
+		pin.id = repo.id;
 		config_changed = true;
 	}
 	plan.add(vec![repo], true, use_submodules, ctx, config, sync_state);
