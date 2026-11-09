@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2
 
 - Added `gitkeep freeze` and `gitkeep unfreeze` to stop or resume bulk syncs of a tracked account without removing and re-adding it
 - Running `gitkeep add` on a frozen account no longer unfreezes it
