@@ -22,7 +22,6 @@ pub struct State {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoState {
-	pub last_synced_at: DateTime<Utc>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub pushed_at: Option<DateTime<Utc>>,
 	/// Stable repo id, used to spot an `owner/name` that was deleted and recreated, which needs a
@@ -72,7 +71,7 @@ impl State {
 	}
 
 	pub fn mark_synced(&mut self, full_name: &str, pushed_at: Option<DateTime<Utc>>, id: u64) {
-		self.repos.insert(full_name.to_string(), RepoState { last_synced_at: Utc::now(), pushed_at, id: Some(id) });
+		self.repos.insert(full_name.to_string(), RepoState { pushed_at, id: Some(id) });
 	}
 
 	pub fn drain_legacy_skipped(&mut self) -> HashSet<String> {
@@ -97,6 +96,16 @@ mod tests {
 		assert!(!path.exists());
 		assert_eq!(fs::read_to_string(dir.join("state.toml.bak")).unwrap(), "not [valid toml");
 		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn state_with_the_old_last_synced_at_field_still_loads() {
+		let state: State = from_str(
+			"[repos.\"user/repo\"]\nlast_synced_at = \"2026-01-01T00:00:00Z\"\npushed_at = \"2026-01-01T00:00:00Z\"\nid = 7\n",
+		)
+		.unwrap();
+		assert_eq!(state.repos["user/repo"].id, Some(7));
+		assert!(!to_string_pretty(&state).unwrap().contains("last_synced_at"));
 	}
 
 	#[test]

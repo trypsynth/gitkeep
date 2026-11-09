@@ -6,6 +6,7 @@
 - Running `gitkeep add` on a frozen account no longer unfreezes it
 - Re-cloning a repo (after a force-push or when it was recreated) now clones beside the old copy first, so a failed clone no longer leaves you with neither
 - Yes/no prompts now take their default answer when there's no terminal, such as in a script, instead of failing with "Could not enable raw mode"
+- The sync state no longer records when each repo was last synced, which nothing read; this cuts the file by about a third
 - git no longer stops a sync to ask for a username or password; a repo it can't fetch without one is reported as failed
 - Fixed repos removed under a very old version coming back: moving them into the config didn't save it unless something else changed in the same sync
 
