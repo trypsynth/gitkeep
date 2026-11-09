@@ -1,0 +1,24 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "schedule": ["before 6am"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["cargo"],
+      "groupName": "cargo dependencies",
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Everything the workflows pin (actions and the Rust toolchain) in one PR, majors included, since the PR's own CI exercises all of it.",
+      "matchFileNames": [".github/workflows/**"],
+      "groupName": "github actions",
+      "separateMajorMinor": false
+    }
+  ]
+}
