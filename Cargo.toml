@@ -5,7 +5,7 @@ description = "Keep local archives of whole accounts and single repos from GitHu
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/trypsynth/gitkeep"
-keywords = ["github", "archive", "git", "sync"]
+keywords = ["git", "archive", "backup", "github", "gitlab"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.91.1"
 

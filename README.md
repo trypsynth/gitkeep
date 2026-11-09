@@ -20,7 +20,7 @@ Pre-built binaries are available on the [releases page](https://github.com/tryps
 ### With cargo
 
 ```bash
-cargo install gitkeep
+cargo install --locked gitkeep
 ```
 
 ### From source
