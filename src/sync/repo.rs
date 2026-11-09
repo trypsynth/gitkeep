@@ -1,7 +1,7 @@
 use std::{
 	collections::HashSet,
 	fs,
-	path::PathBuf,
+	path::{Path, PathBuf},
 	sync::{
 		OnceLock,
 		atomic::{AtomicUsize, Ordering},
@@ -15,7 +15,10 @@ use super::{
 	SyncContext, SyncState, Verbosity,
 	git::{PullOutcome, git_clone, git_pull, update_submodules},
 };
-use crate::{config::Config, forge::RemoteRepo};
+use crate::{
+	config::Config,
+	forge::{RemoteRepo, wiki_url},
+};
 
 /// A clone or pull that a repo needs, decided before any git command runs.
 struct Job {
@@ -26,6 +29,8 @@ struct Job {
 	repo_dir: PathBuf,
 	kind: JobKind,
 	submodules: bool,
+	/// A repo's wiki, which forges may report as turned on without it having any pages.
+	wiki: bool,
 }
 
 enum JobKind {
@@ -37,10 +42,25 @@ enum JobKind {
 
 /// What running a job did. A submodule failure doesn't fail the repo, so it rides along as a warning.
 enum Outcome {
-	Cloned { warning: Option<String> },
-	Updated { warning: Option<String> },
+	Cloned {
+		warning: Option<String>,
+	},
+	Updated {
+		warning: Option<String>,
+	},
 	UpToDate,
+	/// A wiki that couldn't be cloned, which almost always means it has no pages yet.
+	NoWiki,
 	Failed(String),
+}
+
+/// What to sync of one account's or pin's repos besides the repos themselves.
+#[derive(Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Wanted {
+	pub forks: bool,
+	pub wikis: bool,
+	pub submodules: bool,
 }
 
 /// Every clone and pull a sync needs, gathered across all its accounts and pins so they share one
@@ -58,8 +78,7 @@ impl Plan {
 	pub fn add(
 		&mut self,
 		repos: Vec<RemoteRepo>,
-		include_forks: bool,
-		use_submodules: bool,
+		wanted: Wanted,
 		ctx: SyncContext<'_>,
 		config: &Config,
 		sync_state: &mut SyncState<'_>,
@@ -69,7 +88,7 @@ impl Plan {
 				continue;
 			}
 			let full_name = repo.full_name.as_str();
-			if config.is_excluded(full_name) || (repo.fork && !include_forks) {
+			if config.is_excluded(full_name) || (repo.fork && !wanted.forks) {
 				sync_state.totals.excluded += 1;
 				continue;
 			}
@@ -84,6 +103,11 @@ impl Plan {
 			};
 			let mut repo_dir = ctx.archive_dir.to_path_buf();
 			repo_dir.extend(repo.rel_dir.split('/'));
+			// Wiki edits don't move the repo's push time, so the wiki is planned even when the repo
+			// itself is skipped as unchanged.
+			if wanted.wikis && repo.has_wiki {
+				self.add_wiki(full_name, &url, &repo_dir, ctx);
+			}
 			let already_cloned = repo_dir.exists();
 			if (already_cloned && ctx.opts.new_only) || (!already_cloned && ctx.opts.pull_only) {
 				sync_state.totals.excluded += 1;
@@ -119,9 +143,32 @@ impl Plan {
 				url,
 				repo_dir,
 				kind,
-				submodules: use_submodules,
+				submodules: wanted.submodules,
+				wiki: false,
 			});
 		}
+	}
+
+	/// Plans the clone or pull of the wiki of the repo at `repo_dir`, which sits beside it as
+	/// `<repo>.wiki`.
+	fn add_wiki(&mut self, full_name: &str, url: &str, repo_dir: &Path, ctx: SyncContext<'_>) {
+		let mut name = repo_dir.file_name().unwrap_or_default().to_owned();
+		name.push(".wiki");
+		let wiki_dir = repo_dir.with_file_name(name);
+		let exists = wiki_dir.exists();
+		if (exists && ctx.opts.new_only) || (!exists && ctx.opts.pull_only) {
+			return;
+		}
+		self.jobs.push(Job {
+			full_name: format!("{full_name}.wiki"),
+			id: None,
+			pushed_at: None,
+			url: wiki_url(url),
+			repo_dir: wiki_dir,
+			kind: if exists { JobKind::Pull } else { JobKind::Clone },
+			submodules: false,
+			wiki: true,
+		});
 	}
 
 	/// Runs every planned job, up to `ctx.jobs` at once, then records the results in plan order.
@@ -201,6 +248,7 @@ fn reclone(job: &Job, verbosity: Verbosity) -> Outcome {
 fn clone(job: &Job, verbosity: Verbosity) -> Outcome {
 	match git_clone(&job.url, &job.repo_dir, verbosity) {
 		Ok(()) => Outcome::Cloned { warning: submodules(job, verbosity, "clone") },
+		Err(_) if job.wiki => Outcome::NoWiki,
 		Err(e) => Outcome::Failed(format!("Failed to clone {}: {e:#}.", job.full_name)),
 	}
 }
@@ -239,6 +287,7 @@ fn record(job: &Job, outcome: Outcome, verbosity: Verbosity, sync_state: &mut Sy
 			state.mark_synced(&job.full_name, job.pushed_at, job.id);
 			totals.pulled_up_to_date += 1;
 		}
+		Outcome::NoWiki => {}
 		Outcome::Failed(message) => {
 			eprintln!("  {message}");
 			totals.failed += 1;
@@ -275,6 +324,7 @@ mod tests {
 			id: Some(1),
 			pushed_at: None,
 			fork: false,
+			has_wiki: false,
 			clone_url: Some(format!("https://example.com/{name}.git")),
 			ssh_url: ssh_url.map(Into::into),
 		}
@@ -291,7 +341,7 @@ mod tests {
 		let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
 		let mut plan = Plan::default();
 		for repos in lists {
-			plan.add(repos, false, false, ctx, config, &mut sync_state);
+			plan.add(repos, Wanted::default(), ctx, config, &mut sync_state);
 		}
 		let _ = fs::remove_dir_all(&root);
 		(plan.jobs, totals)
@@ -304,6 +354,32 @@ mod tests {
 		let (jobs, totals) = plan(&config, vec![vec![remote("alice/repo", None)]]);
 		assert!(jobs.is_empty());
 		assert_eq!((totals.failed, totals.excluded), (1, 0));
+	}
+
+	#[test]
+	fn plan_adds_a_wiki_beside_its_repo_only_when_wanted() {
+		let root = env::temp_dir().join(format!("gitkeep-wiki-test-{}", process::id()));
+		let ctx =
+			SyncContext { archive_dir: &root, opts: SyncOptions::default(), verbosity: Verbosity::Quiet, jobs: 1 };
+		let config = Config::default();
+		let mut state = State::default();
+		let mut totals = Totals::default();
+		let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
+		let repo = |name: &str| RemoteRepo { has_wiki: true, ..remote(name, None) };
+		let mut plan = Plan::default();
+		plan.add(vec![repo("alice/a")], Wanted::default(), ctx, &config, &mut sync_state);
+		plan.add(vec![repo("alice/b")], Wanted { wikis: true, ..Wanted::default() }, ctx, &config, &mut sync_state);
+		let jobs: Vec<(&str, &str, bool)> =
+			plan.jobs.iter().map(|j| (j.full_name.as_str(), j.url.as_str(), j.wiki)).collect();
+		assert_eq!(
+			jobs,
+			[
+				("alice/a", "https://example.com/alice/a.git", false),
+				("alice/b.wiki", "https://example.com/alice/b.wiki.git", true),
+				("alice/b", "https://example.com/alice/b.git", false),
+			]
+		);
+		assert_eq!(plan.jobs[1].repo_dir, root.join("alice").join("b.wiki"));
 	}
 
 	#[test]
@@ -333,6 +409,7 @@ mod tests {
 			repo_dir: root.join(format!("repo{i}")),
 			kind: JobKind::Clone,
 			submodules: false,
+			wiki: false,
 		};
 		let source_url = source.to_string_lossy();
 		let missing_url = root.join("missing").to_string_lossy().into_owned();
@@ -372,6 +449,7 @@ mod tests {
 			repo_dir: repo_dir.clone(),
 			kind: JobKind::Reclone,
 			submodules: false,
+			wiki: false,
 		};
 		let failed = run_job(&job(root.join("missing").to_string_lossy().into_owned()), Verbosity::Quiet);
 		assert!(matches!(failed, Outcome::Failed(_)));

@@ -19,6 +19,9 @@ fn format_list(config: &Config) -> String {
 			if user.frozen {
 				tags.push("frozen");
 			}
+			if user.wikis {
+				tags.push("wikis");
+			}
 			match user.submodules {
 				Some(true) => tags.push("submodules"),
 				Some(false) => tags.push("no-submodules"),
@@ -36,11 +39,14 @@ fn format_list(config: &Config) -> String {
 		}
 		let _ = writeln!(out, "Repos ({} total):", sorted.len());
 		for repo in sorted {
-			let suffix = match repo.submodules {
-				Some(true) => " [submodules]",
-				Some(false) => " [no-submodules]",
-				None => "",
-			};
+			let tags: Vec<&str> = [
+				repo.wikis.then_some("wikis"),
+				repo.submodules.map(|on| if on { "submodules" } else { "no-submodules" }),
+			]
+			.into_iter()
+			.flatten()
+			.collect();
+			let suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags.join(", ")) };
 			let _ = writeln!(out, "  {}{}", repo.full_name, suffix);
 		}
 	}
@@ -83,7 +89,7 @@ mod tests {
 	#[test]
 	fn list_shows_tracked_users() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("alice"), "got: {out}");
 	}
@@ -91,7 +97,7 @@ mod tests {
 	#[test]
 	fn list_shows_forks_tag() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", true, false, None);
+		config.add_account(None, "alice", true, false, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("forks"), "got: {out}");
 	}
@@ -99,7 +105,7 @@ mod tests {
 	#[test]
 	fn list_shows_frozen_tag() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, true, None);
+		config.add_account(None, "alice", false, true, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("frozen"), "got: {out}");
 	}
@@ -107,7 +113,7 @@ mod tests {
 	#[test]
 	fn list_omits_removed_section_when_none() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		let out = format_list(&config);
 		assert!(!out.to_lowercase().contains("removed"), "got: {out}");
 	}
@@ -115,7 +121,7 @@ mod tests {
 	#[test]
 	fn list_shows_removed_section_when_present() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		config.exclude_repo("alice/noisy");
 		let out = format_list(&config);
 		assert!(out.contains("alice/noisy"), "got: {out}");
@@ -125,7 +131,7 @@ mod tests {
 	#[test]
 	fn list_removed_repos_are_sorted() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		config.exclude_repo("alice/zzz");
 		config.exclude_repo("alice/aaa");
 		let out = format_list(&config);
@@ -146,7 +152,7 @@ mod tests {
 	#[test]
 	fn list_shows_submodules_tag_when_enabled() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, Some(true));
+		config.add_account(None, "alice", false, false, false, Some(true));
 		let out = format_list(&config);
 		assert!(out.contains("submodules"), "got: {out}");
 	}
@@ -154,7 +160,7 @@ mod tests {
 	#[test]
 	fn list_shows_no_submodules_tag_when_explicitly_disabled() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, Some(false));
+		config.add_account(None, "alice", false, false, false, Some(false));
 		let out = format_list(&config);
 		assert!(out.contains("no-submodules"), "got: {out}");
 	}
@@ -162,7 +168,7 @@ mod tests {
 	#[test]
 	fn list_omits_submodules_tag_when_unset() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		let out = format_list(&config);
 		assert!(!out.contains("submodules"), "got: {out}");
 	}
@@ -190,7 +196,7 @@ mod tests {
 	#[test]
 	fn list_omits_pinned_section_when_none() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		let out = format_list(&config);
 		assert!(!out.contains("Repos ("), "got: {out}");
 	}
@@ -198,7 +204,7 @@ mod tests {
 	#[test]
 	fn list_shows_host_qualified_gitlab_entries() {
 		let mut config = Config::default();
-		config.add_account(Some("gitlab.example.com"), "some-group", false, false, None);
+		config.add_account(Some("gitlab.example.com"), "some-group", false, false, false, None);
 		let out = format_list(&config);
 		assert!(out.contains("gitlab.example.com/some-group"), "got: {out}");
 	}

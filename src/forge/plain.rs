@@ -64,6 +64,7 @@ impl PlainGit {
 			id: None,
 			pushed_at: None,
 			fork: false,
+			has_wiki: false,
 			clone_url: Some(url.clone()),
 			ssh_url: Some(url),
 		}

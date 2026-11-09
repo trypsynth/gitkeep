@@ -16,35 +16,27 @@ mod track;
 mod utils;
 
 use crate::{
-	cli::{Cli, Commands},
+	cli::{AddArgs, Cli, Commands},
 	config::Config,
 };
 
-#[allow(clippy::fn_params_excessive_bools)]
-async fn run_add(
-	targets: Vec<String>,
-	forks: bool,
-	frozen: bool,
-	submodules: bool,
-	no_submodules: bool,
-	no_sync: bool,
-	sync_flag: bool,
-) -> Result<()> {
-	let submodules_override = if submodules {
+async fn run_add(args: AddArgs) -> Result<()> {
+	let submodules_override = if args.submodules {
 		Some(true)
-	} else if no_submodules {
+	} else if args.no_submodules {
 		Some(false)
 	} else {
 		None
 	};
-	let no_sync = if sync_flag {
+	let no_sync = if args.sync {
 		false
-	} else if no_sync {
+	} else if args.no_sync {
 		true
 	} else {
 		Config::load()?.no_sync
 	};
-	let added = track::add(&utils::expand_targets(targets)?, forks, frozen, submodules_override).await?;
+	let targets = utils::expand_targets(args.users)?;
+	let added = track::add(&targets, args.forks, args.frozen, args.wikis, submodules_override).await?;
 	if no_sync {
 		return Ok(());
 	}
@@ -57,9 +49,7 @@ async fn main() -> Result<()> {
 	match cli.command {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
-		Commands::Add { users, forks, frozen, submodules, no_submodules, no_sync, sync } => {
-			run_add(users, forks, frozen, submodules, no_submodules, no_sync, sync).await
-		}
+		Commands::Add(args) => run_add(args).await,
 		Commands::Remove { users, delete, yes } => track::remove(&utils::expand_targets(users)?, delete, yes).await,
 		Commands::Freeze { users } => track::set_frozen(&users, true),
 		Commands::Unfreeze { users } => track::set_frozen(&users, false),

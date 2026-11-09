@@ -239,7 +239,7 @@ mod tests {
 		let root = temp_dir();
 		fs::create_dir_all(root.join("Alice").join("BigRepo")).unwrap();
 		let mut config = Config::default();
-		config.add_account(None, "Alice", false, false, None);
+		config.add_account(None, "Alice", false, false, false, None);
 		assert!(remove(&mut config, &root, "alice/bigrepo", true).await);
 		assert!(config.excluded.contains("Alice/BigRepo"));
 		assert_eq!(config.track.len(), 1, "the account itself stays tracked");
@@ -251,7 +251,7 @@ mod tests {
 	async fn remove_already_excluded_repo_is_unchanged() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		config.exclude_repo("alice/big");
 		assert!(!remove(&mut config, &root, "alice/big", true).await);
 		assert_eq!(config.excluded.len(), 1);
@@ -292,7 +292,7 @@ mod tests {
 	async fn remove_github_account_leaves_same_name_on_other_hosts() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		config.track.push(gitlab_account("alice"));
 		assert!(remove(&mut config, &root, "alice", false).await);
 		assert_eq!(config.track.len(), 1);

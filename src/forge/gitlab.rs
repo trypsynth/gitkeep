@@ -12,6 +12,9 @@ struct Project {
 	ssh_url_to_repo: Option<String>,
 	#[serde(default, rename = "forked_from_project")]
 	forked_from: Option<ForkParent>,
+	/// Left out of the reduced view GitLab gives requests without a token.
+	#[serde(default)]
+	wiki_enabled: Option<bool>,
 }
 
 /// Marker for `forked_from_project`; only its presence matters for fork detection.
@@ -123,6 +126,7 @@ impl GitLab {
 			// miss recent pushes. Leaving this unset makes every sync pull.
 			pushed_at: None,
 			fork: project.forked_from.is_some(),
+			has_wiki: project.wiki_enabled.unwrap_or(true),
 			clone_url: project.http_url_to_repo.clone(),
 			ssh_url: project.ssh_url_to_repo.clone(),
 		}
@@ -154,6 +158,7 @@ mod tests {
 			http_url_to_repo: Some("https://gitlab.example.com/grp/proj.git".to_string()),
 			ssh_url_to_repo: Some("git@gitlab.example.com:grp/proj.git".to_string()),
 			forked_from: None,
+			wiki_enabled: None,
 		};
 		let repo = gitlab.remote_repo(&project);
 		assert_eq!(repo.full_name, "gitlab.example.com/grp/proj");

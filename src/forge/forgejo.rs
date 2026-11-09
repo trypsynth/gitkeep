@@ -10,6 +10,8 @@ struct Repo {
 	full_name: String,
 	#[serde(default)]
 	fork: bool,
+	#[serde(default)]
+	has_wiki: bool,
 	clone_url: Option<String>,
 	ssh_url: Option<String>,
 }
@@ -130,6 +132,7 @@ impl Forgejo {
 			// guaranteed to move on every push), so every sync pulls.
 			pushed_at: None,
 			fork: repo.fork,
+			has_wiki: repo.has_wiki,
 			clone_url: repo.clone_url.clone(),
 			ssh_url: repo.ssh_url.clone(),
 		}
@@ -147,6 +150,7 @@ mod tests {
 			id: 7,
 			full_name: "forgejo/forgejo".to_string(),
 			fork: true,
+			has_wiki: false,
 			clone_url: Some("https://codeberg.org/forgejo/forgejo.git".to_string()),
 			ssh_url: Some("ssh://git@codeberg.org/forgejo/forgejo.git".to_string()),
 		};

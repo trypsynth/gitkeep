@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use crate::size::SizeFormat;
 
@@ -16,28 +16,7 @@ pub enum Commands {
 	/// Authenticate with a GitHub personal access token
 	Login,
 	/// Add accounts or single repos: GitHub names (owner, owner/repo), host/path, or URLs
-	Add {
-		#[arg(value_name = "TARGET", required = true)]
-		users: Vec<String>,
-		/// Include forked repositories from these accounts
-		#[arg(long)]
-		forks: bool,
-		/// Do not update these accounts in bulk runs after the initial clone (same as `freeze`)
-		#[arg(long)]
-		frozen: bool,
-		/// Clone submodules for these accounts/repos, overriding the global default
-		#[arg(long, conflicts_with = "no_submodules")]
-		submodules: bool,
-		/// Never clone submodules for these accounts/repos, overriding the global default
-		#[arg(long, conflicts_with = "submodules")]
-		no_submodules: bool,
-		/// Add to the tracked list without cloning right now, overriding the config default
-		#[arg(long, conflicts_with = "sync")]
-		no_sync: bool,
-		/// Clone immediately after adding, overriding a `no_sync = true` config default
-		#[arg(long, conflicts_with = "no_sync")]
-		sync: bool,
-	},
+	Add(AddArgs),
 	/// Stop tracking accounts or repos, including single repos of a tracked account
 	#[command(alias = "rm")]
 	Remove {
@@ -101,4 +80,32 @@ pub enum Commands {
 		#[arg(short, long, value_name = "N")]
 		jobs: Option<usize>,
 	},
+}
+
+#[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AddArgs {
+	#[arg(value_name = "TARGET", required = true)]
+	pub users: Vec<String>,
+	/// Include forked repositories from these accounts
+	#[arg(long)]
+	pub forks: bool,
+	/// Also archive these accounts'/repos' wikis, beside each repo as `<repo>.wiki`
+	#[arg(long)]
+	pub wikis: bool,
+	/// Do not update these accounts in bulk runs after the initial clone (same as `freeze`)
+	#[arg(long)]
+	pub frozen: bool,
+	/// Clone submodules for these accounts/repos, overriding the global default
+	#[arg(long, conflicts_with = "no_submodules")]
+	pub submodules: bool,
+	/// Never clone submodules for these accounts/repos, overriding the global default
+	#[arg(long, conflicts_with = "submodules")]
+	pub no_submodules: bool,
+	/// Add to the tracked list without cloning right now, overriding the config default
+	#[arg(long, conflicts_with = "sync")]
+	pub no_sync: bool,
+	/// Clone immediately after adding, overriding a `no_sync = true` config default
+	#[arg(long, conflicts_with = "no_sync")]
+	pub sync: bool,
 }

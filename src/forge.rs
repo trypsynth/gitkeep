@@ -71,6 +71,9 @@ pub struct RemoteRepo {
 	/// pull the repo rather than skipping it as unchanged.
 	pub pushed_at: Option<DateTime<Utc>>,
 	pub fork: bool,
+	/// Whether the repo may have a wiki. Forges report that it's turned on, not that it has pages,
+	/// so cloning it can still find nothing.
+	pub has_wiki: bool,
 	pub clone_url: Option<String>,
 	pub ssh_url: Option<String>,
 }
@@ -79,6 +82,12 @@ impl RemoteRepo {
 	pub fn clone_url(&self, use_ssh: bool) -> Option<String> {
 		if use_ssh { self.ssh_url.clone() } else { self.clone_url.clone() }
 	}
+}
+
+/// Where the wiki of the repo cloned from `url` lives; GitHub, GitLab and Forgejo all keep it beside
+/// the repo as `<repo>.wiki.git`.
+pub fn wiki_url(url: &str) -> String {
+	format!("{}.wiki.git", url.strip_suffix(".git").unwrap_or(url))
 }
 
 impl Forge {
@@ -245,6 +254,13 @@ mod tests {
 
 	fn target(host: Option<&str>, path: &str) -> Target {
 		Target { host: host.map(ToString::to_string), path: path.to_string(), ssh_alias: None }
+	}
+
+	#[test]
+	fn wiki_url_sits_beside_the_repo() {
+		assert_eq!(wiki_url("https://github.com/a/b.git"), "https://github.com/a/b.wiki.git");
+		assert_eq!(wiki_url("git@github.com:a/b.git"), "git@github.com:a/b.wiki.git");
+		assert_eq!(wiki_url("https://codeberg.org/a/b"), "https://codeberg.org/a/b.wiki.git");
 	}
 
 	#[test]

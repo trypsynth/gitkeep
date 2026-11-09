@@ -21,7 +21,13 @@ pub enum AddedItem {
 /// Adds accounts and repos from any forge. Each target is a GitHub name (`owner` or
 /// `owner/repo`), a host-qualified name (`host/path`), a URL, or an SSH alias and path
 /// (`alias:path`). The first time a host is seen, its forge kind is detected and recorded.
-pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<Vec<AddedItem>> {
+pub async fn add(
+	targets: &[String],
+	forks: bool,
+	frozen: bool,
+	wikis: bool,
+	submodules: Option<bool>,
+) -> Result<Vec<AddedItem>> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let mut forges: HashMap<Option<String>, Forge> = HashMap::new();
@@ -39,7 +45,7 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 	for (host, item) in resolved {
 		match item {
 			Resolved::Account(name) => {
-				changed |= config.add_account(host.as_deref(), &name, forks, frozen, submodules);
+				changed |= config.add_account(host.as_deref(), &name, forks, frozen, wikis, submodules);
 				let tracked = TrackedAccount { host, ..TrackedAccount::with_options(&name, forks, frozen) };
 				// A repo given earlier in the same command is dropped here too, so it isn't synced twice.
 				for pin in config.remove_pins_covered(&tracked) {
@@ -62,12 +68,22 @@ pub async fn add(targets: &[String], forks: bool, frozen: bool, submodules: Opti
 					} else {
 						println!("{owner} is already fully tracked; {key} will be synced automatically.");
 					}
-				} else if config.is_pinned(&key) {
-					println!("Already tracking {key}.");
+				} else if let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name.eq_ignore_ascii_case(&key)) {
+					if wikis && !pin.wikis {
+						pin.wikis = true;
+						println!("Wikis enabled for {key}.");
+						changed = true;
+						added.push(AddedItem::Pin(pin.full_name.clone()));
+					} else {
+						println!("Already tracking {key}.");
+					}
 				} else {
 					// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
 					config.include_repo(&key);
 					config.pin_repo_with_options(&key, repo.id, submodules);
+					if let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name == key) {
+						pin.wikis = wikis;
+					}
 					println!("Now tracking {key}.");
 					added.push(AddedItem::Pin(key));
 					changed = true;

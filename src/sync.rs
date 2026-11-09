@@ -79,7 +79,7 @@ pub async fn run(targets: &[String], opts: SyncOptions, verbosity: Verbosity) ->
 	let config = Config::load().context("Could not load config")?;
 	let untracked: Vec<String> = targets.iter().filter(|t| classify(&config, t).is_none()).cloned().collect();
 	if !untracked.is_empty() {
-		track::add(&untracked, false, false, None).await?;
+		track::add(&untracked, false, false, false, None).await?;
 	}
 	let mut config = Config::load().context("Could not load config")?;
 	let items: Vec<Item> = targets.iter().filter_map(|target| classify(&config, target)).collect();
@@ -247,7 +247,7 @@ mod tests {
 	#[test]
 	fn classify_matches_frozen_accounts_too() {
 		let mut config = Config::default();
-		config.add_account(None, "Alice", false, true, None);
+		config.add_account(None, "Alice", false, true, false, None);
 		assert_eq!(named(&config, "alice"), "account Alice");
 	}
 
@@ -261,14 +261,14 @@ mod tests {
 	#[test]
 	fn classify_maps_repo_to_its_tracked_owner() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		assert_eq!(named(&config, "alice/repo"), "account alice");
 	}
 
 	#[test]
 	fn classify_treats_removed_repo_as_untracked() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, None);
+		config.add_account(None, "alice", false, false, false, None);
 		config.exclude_repo("alice/big");
 		assert_eq!(named(&config, "alice/big"), "untracked");
 	}
@@ -276,7 +276,7 @@ mod tests {
 	#[test]
 	fn classify_distinguishes_hosts() {
 		let mut config = Config::default();
-		config.add_account(Some("gitlab.example.com"), "alice", false, false, None);
+		config.add_account(Some("gitlab.example.com"), "alice", false, false, false, None);
 		assert_eq!(named(&config, "alice"), "untracked");
 		assert_eq!(named(&config, "https://gitlab.example.com/alice"), "account gitlab.example.com/alice");
 		assert_eq!(named(&config, "gitlab.example.com/alice/proj"), "account gitlab.example.com/alice");

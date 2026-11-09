@@ -7,7 +7,10 @@ use std::{
 use anyhow::Result;
 use futures_util::{StreamExt as _, stream};
 
-use super::{SyncContext, SyncState, Verbosity, repo::Plan};
+use super::{
+	SyncContext, SyncState, Verbosity,
+	repo::{Plan, Wanted},
+};
 use crate::{
 	config::{Config, TrackedAccount},
 	forge::{AccountRepos, Forge, RemoteRepo, archive_path, split_host},
@@ -109,7 +112,8 @@ pub fn sync_one(
 		current.host.as_ref().map_or_else(|| current.name.clone(), |h| format!("https://{h}/{}", current.name));
 	report_found(&account.repos, &current.display_name(), &add_hint, include_forks, ctx.verbosity);
 	report_gone(&current, &account.repos, ctx, sync_state);
-	plan.add(account.repos, include_forks, use_submodules, ctx, config, sync_state);
+	let wanted = Wanted { forks: include_forks, wikis: user.wikis, submodules: use_submodules };
+	plan.add(account.repos, wanted, ctx, config, sync_state);
 	config_changed
 }
 
@@ -118,8 +122,15 @@ pub fn sync_one(
 /// each is only reported once.
 fn report_gone(account: &TrackedAccount, listed: &[RemoteRepo], ctx: SyncContext<'_>, sync_state: &mut SyncState<'_>) {
 	let listed: HashSet<&str> = listed.iter().map(|r| r.full_name.as_str()).collect();
-	let gone: Vec<String> =
-		sync_state.state.repos.keys().filter(|k| account.covers(k) && !listed.contains(k.as_str())).cloned().collect();
+	let gone: Vec<String> = sync_state
+		.state
+		.repos
+		.keys()
+		.filter(|k| account.covers(k) && !listed.contains(k.as_str()))
+		// A wiki is gone only once its repo is, and then the repo is reported instead.
+		.filter(|k| !k.strip_suffix(".wiki").is_some_and(|repo| listed.contains(repo)))
+		.cloned()
+		.collect();
 	for key in gone {
 		sync_state.state.repos.remove(&key);
 		if archive_path(ctx.archive_dir, &key).exists() {
@@ -200,7 +211,8 @@ pub fn sync_one_pinned(
 		pin.id = repo.id;
 		config_changed = true;
 	}
-	plan.add(vec![repo], true, use_submodules, ctx, config, sync_state);
+	let wikis = config.pinned.iter().any(|p| p.full_name == repo.full_name && p.wikis);
+	plan.add(vec![repo], Wanted { forks: true, wikis, submodules: use_submodules }, ctx, config, sync_state);
 	config_changed
 }
 
@@ -235,6 +247,7 @@ mod tests {
 			id: None,
 			pushed_at: None,
 			fork: false,
+			has_wiki: false,
 			clone_url: None,
 			ssh_url: None,
 		}];

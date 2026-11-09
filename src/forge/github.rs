@@ -148,6 +148,7 @@ fn remote_repo(repo: &Repository, owner: &str) -> RemoteRepo {
 		id: Some(repo.id.into_inner()),
 		pushed_at: repo.pushed_at,
 		fork: repo.fork.unwrap_or(false),
+		has_wiki: repo.has_wiki.unwrap_or(false),
 		clone_url: repo.clone_url.as_ref().map(ToString::to_string),
 		ssh_url: repo.ssh_url.clone(),
 	}

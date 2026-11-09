@@ -30,6 +30,8 @@ pub struct TrackedAccount {
 	pub forks: bool,
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub frozen: bool,
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub wikis: bool,
 	/// Stable account id on its forge, used to follow renames.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
@@ -43,7 +45,7 @@ pub struct TrackedAccount {
 
 impl TrackedAccount {
 	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
-		Self { name: name.into(), forks, frozen, id: None, submodules: None, host: None }
+		Self { name: name.into(), forks, frozen, wikis: false, id: None, submodules: None, host: None }
 	}
 
 	pub fn display_name(&self) -> String {
@@ -79,6 +81,8 @@ pub struct PinnedRepo {
 	/// Overrides the global `submodules` default for this pin. `None` inherits it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub submodules: Option<bool>,
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub wikis: bool,
 }
 
 // Accepts both the legacy bare-string form (`pinned = ["user/repo"]`) and the current
@@ -99,11 +103,13 @@ impl<'de> Deserialize<'de> for PinnedRepo {
 				id: Option<u64>,
 				#[serde(default)]
 				submodules: Option<bool>,
+				#[serde(default)]
+				wikis: bool,
 			},
 		}
 		Ok(match Repr::deserialize(deserializer)? {
-			Repr::Legacy(full_name) => Self { full_name, id: None, submodules: None },
-			Repr::Full { full_name, id, submodules } => Self { full_name, id, submodules },
+			Repr::Legacy(full_name) => Self { full_name, id: None, submodules: None, wikis: false },
+			Repr::Full { full_name, id, submodules, wikis } => Self { full_name, id, submodules, wikis },
 		})
 	}
 }
