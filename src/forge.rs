@@ -6,6 +6,7 @@ mod github;
 mod gitlab;
 mod gitolite;
 mod http;
+mod plain;
 
 use std::{
 	path::{Path, PathBuf},
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use self::http::Http;
-pub use self::{forgejo::Forgejo, github::GitHub, gitlab::GitLab, gitolite::Gitolite};
+pub use self::{forgejo::Forgejo, github::GitHub, gitlab::GitLab, gitolite::Gitolite, plain::PlainGit};
 
 /// The kind of software a self-hosted forge runs, which decides the API gitkeep speaks to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,8 @@ pub enum ForgeKind {
 	Forgejo,
 	/// Reached over SSH only, where `ssh <host> info` lists the repos you can read.
 	Gitolite,
+	/// Serves git but no known API (cgit, a bare SSH server, ...), so only single repos.
+	Git,
 }
 
 /// A connected forge. Every forge answers the same questions, so sync, add, and remove never need
@@ -37,6 +40,7 @@ pub enum Forge {
 	GitLab(GitLab),
 	Forgejo(Forgejo),
 	Gitolite(Gitolite),
+	Plain(PlainGit),
 }
 
 /// What an `add` target turned out to be.
@@ -85,6 +89,7 @@ impl Forge {
 			Self::GitLab(f) => f.resolve(path).await,
 			Self::Forgejo(f) => f.resolve(path).await,
 			Self::Gitolite(f) => f.resolve(path).await,
+			Self::Plain(f) => f.resolve(path).await,
 		}
 	}
 
@@ -95,6 +100,7 @@ impl Forge {
 			Self::GitLab(f) => f.account(name).await,
 			Self::Forgejo(f) => f.account(name).await,
 			Self::Gitolite(f) => f.account(name).await,
+			Self::Plain(f) => f.account(name),
 		}
 	}
 
@@ -105,11 +111,13 @@ impl Forge {
 			Self::GitLab(f) => f.repo(path).await,
 			Self::Forgejo(f) => f.repo(path, id).await,
 			Self::Gitolite(f) => f.repo(path).await,
+			Self::Plain(f) => Ok(Some(f.repo(path))),
 		}
 	}
 }
 
-/// Works out which kind of forge `host` runs, for the first time something is added from it.
+/// Works out which kind of forge `host` runs, for the first time something is added from it. A
+/// host that answers but isn't GitLab or Forgejo is taken as plain git.
 pub async fn detect(host: &str) -> Result<ForgeKind> {
 	let http = Http::new(host, None)?;
 	if GitLab::detect(&http).await? {
@@ -118,7 +126,7 @@ pub async fn detect(host: &str) -> Result<ForgeKind> {
 	if Forgejo::detect(&http).await {
 		return Ok(ForgeKind::Forgejo);
 	}
-	bail!("Couldn't recognize {host} as a supported forge (GitLab or Forgejo).")
+	Ok(ForgeKind::Git)
 }
 
 /// A target given on the command line: the forge host it lives on (`None` for GitHub) and its path
@@ -147,8 +155,11 @@ impl Target {
 			&& !alias.contains('/')
 		{
 			let path = path.trim_matches('/');
-			let path = path.strip_suffix(".git").unwrap_or(path);
-			return Self { host: Some(alias.to_string()), path: path.to_string(), ssh_alias: Some(alias.to_string()) };
+			let path = path.strip_suffix(".git").unwrap_or(path).to_string();
+			if matches!(alias, "github.com" | "git@github.com") {
+				return Self { host: None, path, ssh_alias: None };
+			}
+			return Self { host: Some(alias.to_string()), path, ssh_alias: Some(alias.to_string()) };
 		}
 		match split_host(arg) {
 			Some((host, path)) => Self { host: Some(host.to_lowercase()), path: path.to_string(), ssh_alias: None },
@@ -247,6 +258,7 @@ mod tests {
 		assert_eq!(Target::parse("chats:"), ssh("chats", ""));
 		assert_eq!(Target::parse("git@host.example:/grp/repo.git"), ssh("git@host.example", "grp/repo"));
 		assert_eq!(Target::parse("https://gitlab.com/grp"), target(Some("gitlab.com"), "grp"));
+		assert_eq!(Target::parse("git@github.com:rust-lang/mdBook.git"), target(None, "rust-lang/mdBook"));
 		assert_eq!(target(Some("home.example.com"), "").key(), "home.example.com");
 		assert_eq!(Target::parse("Home.Example.com"), target(Some("home.example.com"), ""));
 	}

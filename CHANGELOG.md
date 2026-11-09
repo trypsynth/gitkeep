@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Added gitolite support: `gitkeep add myserver:` tracks every repo your key can read on the gitolite server behind an SSH alias, and `myserver:repo` tracks one. Archives go under the host the alias connects to, and the server can be named either way afterwards
+- Single repos can now be added from any host git can clone from, such as cgit or a bare SSH server, even if it isn't a forge gitkeep knows
+- GitHub SSH URLs like `git@github.com:owner/repo.git` are now accepted as targets
 
 ## 0.4.2
 

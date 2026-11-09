@@ -61,6 +61,8 @@ token = "glpat-..."
 use_ssh = false  # optional: overrides the global SSH setting for this host
 ```
 
+Any other host that serves git, such as cgit, gitweb, or a bare SSH server, works too, one repo at a time: `gitkeep add https://git.example.com/someone/repo` (or `myserver:repo` for an SSH alias) tracks it if `git ls-remote` can reach it. Such hosts have no API to list an account's repos, so whole accounts can't be tracked there, and every sync pulls each repo.
+
 Gitolite servers have no web API, so they're added through an SSH alias from your `~/.ssh/config`, in the same `alias:path` form you clone with: `gitkeep add myserver:` tracks every repo your key can read there, and `gitkeep add myserver:some-repo` (or `myserver:a,b`) tracks just those. gitkeep asks `ssh` which host the alias connects to and stores the archives under that host name, as `<host>/<repo>`; cloning and listing still go through the alias, so its port, user and key settings apply. Gitolite doesn't report when a repo was last pushed, so every sync pulls each repo.
 
 | Flag | Description |

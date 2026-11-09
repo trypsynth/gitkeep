@@ -19,7 +19,7 @@ pub use self::{
 	state::State,
 };
 use crate::{
-	forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, Gitolite, Target, display_name, split_host},
+	forge::{Forge, ForgeKind, Forgejo, GitHub, GitLab, Gitolite, PlainGit, Target, display_name, split_host},
 	utils::write_atomic,
 };
 
@@ -167,6 +167,7 @@ impl Config {
 			ForgeKind::GitLab => Ok(Forge::GitLab(GitLab::new(host, entry.token.as_deref())?)),
 			ForgeKind::Forgejo => Ok(Forge::Forgejo(Forgejo::new(host, entry.token.as_deref())?)),
 			ForgeKind::Gitolite => Ok(Forge::Gitolite(Gitolite::new(host, entry.ssh_alias.as_deref().unwrap_or(host)))),
+			ForgeKind::Git => Ok(Forge::Plain(PlainGit::new(host, entry.ssh_alias.as_deref()))),
 		}
 	}
 

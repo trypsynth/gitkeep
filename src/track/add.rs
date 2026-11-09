@@ -1,6 +1,6 @@
 use std::collections::{HashMap, hash_map::Entry};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::{
 	config::{Config, HostConfig, TrackedAccount},
@@ -87,6 +87,10 @@ async fn register_host(config: &mut Config, target: &mut Target) -> Result<bool>
 	let Some(host) = target.host.clone().filter(|h| !config.hosts.contains_key(h)) else { return Ok(false) };
 	if let Some(alias) = target.ssh_alias.clone() {
 		let host = forge::ssh_hostname(&alias).await?;
+		if host == "github.com" {
+			*target = Target { host: None, path: target.path.clone(), ssh_alias: None };
+			return Ok(false);
+		}
 		target.host = Some(host.clone());
 		if let Some(entry) = config.hosts.get_mut(&host) {
 			// Already added another way; remember the alias so it can name things from now on.
@@ -96,19 +100,24 @@ async fn register_host(config: &mut Config, target: &mut Target) -> Result<bool>
 			}
 			return Ok(new_alias);
 		}
-		if !Gitolite::detect(&alias).await {
-			bail!("'ssh {alias} info' didn't answer like a gitolite server, so gitkeep can't list {host}'s repos.");
-		}
-		let ssh_alias = (alias != host).then_some(alias);
-		config.hosts.insert(host, HostConfig { kind: ForgeKind::Gitolite, token: None, use_ssh: None, ssh_alias });
+		// A plain git host is cloned over SSH only because it has an alias, so it always keeps one.
+		let (kind, ssh_alias) = if Gitolite::detect(&alias).await {
+			(ForgeKind::Gitolite, (alias != host).then_some(alias))
+		} else {
+			(ForgeKind::Git, Some(alias))
+		};
+		config.hosts.insert(host, HostConfig { kind, token: None, use_ssh: None, ssh_alias });
 		return Ok(true);
 	}
 	let kind = forge::detect(&host).await?;
 	// Scripts get the global setting, since `confirm` answers with its default without a terminal.
 	// An answer that matches the global setting isn't stored, so the host keeps following it if it
-	// changes.
-	let use_ssh =
-		Some(confirm(&format!("Use SSH clone URLs for {host}?"), config.use_ssh)?).filter(|&ssh| ssh != config.use_ssh);
+	// changes. A plain git host only has the URL it was added with, so there's nothing to choose.
+	let use_ssh = if kind == ForgeKind::Git {
+		None
+	} else {
+		Some(confirm(&format!("Use SSH clone URLs for {host}?"), config.use_ssh)?).filter(|&ssh| ssh != config.use_ssh)
+	};
 	config.hosts.insert(host, HostConfig { kind, token: None, use_ssh, ssh_alias: None });
 	Ok(true)
 }
