@@ -4,10 +4,13 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 
-use crate::config::Config;
+use crate::{
+	config::{Config, TrackedAccount},
+	forge::archive_path,
+};
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum SizeFormat {
@@ -19,20 +22,59 @@ pub enum SizeFormat {
 	Raw,
 }
 
-pub fn run(format: SizeFormat, breakdown: bool) -> Result<()> {
+pub fn run(account: Option<&str>, format: SizeFormat, breakdown: bool) -> Result<()> {
 	let config = Config::load()?;
 	let archive_dir = config.archive_dir()?;
 	if !archive_dir.exists() {
 		println!("Archive directory {} does not exist yet.", archive_dir.display());
 		return Ok(());
 	}
-	let entries = account_sizes(&archive_dir)?;
+	let (entries, label) = match account {
+		Some(arg) => {
+			let key = account_key(&config, arg);
+			let dir = archive_path(&archive_dir, &key);
+			if !dir.is_dir() {
+				bail!("Nothing is archived for {key}.");
+			}
+			(repo_sizes(&dir)?, "repo")
+		}
+		None => (account_sizes(&archive_dir)?, "account"),
+	};
 	if entries.is_empty() {
 		println!("Archive is empty.");
 		return Ok(());
 	}
-	println!("{}", build_report(entries, format, breakdown));
+	println!("{}", build_report(entries, label, format, breakdown));
 	Ok(())
+}
+
+/// The archive key `arg` names, spelled as the tracked account is, since names are matched without
+/// regard to case but the archive's folders aren't.
+fn account_key(config: &Config, arg: &str) -> String {
+	let target = config.target(arg);
+	config
+		.track
+		.iter()
+		.find(|u| u.host == target.host && u.name.eq_ignore_ascii_case(&target.path))
+		.map_or_else(|| target.key(), TrackedAccount::display_name)
+}
+
+/// Measures each repo (each folder with a `.git` in it) under `dir`, named by its path inside it. A
+/// repo folder itself is measured as one entry named after the folder.
+fn repo_sizes(dir: &Path) -> Result<Vec<(String, u64)>> {
+	if dir.join(".git").exists() {
+		let name = dir.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+		return Ok(vec![(name, dir_size(dir)?)]);
+	}
+	let mut entries = Vec::new();
+	for (name, path) in subdirs(dir)? {
+		if path.join(".git").exists() {
+			entries.push((name, dir_size(&path)?));
+		} else {
+			entries.extend(repo_sizes(&path)?.into_iter().map(|(sub, size)| (format!("{name}/{sub}"), size)));
+		}
+	}
+	Ok(entries)
 }
 
 /// Measures each account directory in the archive. Archives from forges other than GitHub sit under
@@ -63,15 +105,16 @@ fn subdirs(path: &Path) -> Result<Vec<(String, PathBuf)>> {
 	Ok(dirs)
 }
 
-/// The total size alone, or with `breakdown`, each account's size, largest first, then the total.
-fn build_report(mut entries: Vec<(String, u64)>, format: SizeFormat, breakdown: bool) -> String {
+/// The total size alone, or with `breakdown`, each entry's size, largest first, then the total.
+/// `label` is what the entries are, as in "Per-account sizes".
+fn build_report(mut entries: Vec<(String, u64)>, label: &str, format: SizeFormat, breakdown: bool) -> String {
 	let total = format_size(entries.iter().map(|(_, size)| size).sum(), format);
 	if !breakdown {
 		return total;
 	}
 	entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 	let width = entries.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-	let mut out = String::from("Per-account sizes:\n");
+	let mut out = format!("Per-{label} sizes:\n");
 	for (name, size) in &entries {
 		let _ = writeln!(out, "{name:width$}  {}", format_size(*size, format));
 	}
@@ -141,14 +184,29 @@ mod tests {
 	}
 
 	#[test]
+	fn repo_sizes_finds_repos_at_any_depth_and_skips_other_folders() {
+		let root = env::temp_dir().join(format!("gitkeep-repo-size-test-{}", process::id()));
+		for (dir, bytes) in [("a/.git", 10), ("a.wiki/.git", 5), ("sub/b/.git", 20), ("loose", 7)] {
+			fs::create_dir_all(root.join(dir)).unwrap();
+			fs::write(root.join(dir).join("f"), vec![0; bytes]).unwrap();
+		}
+		let mut entries = repo_sizes(&root).unwrap();
+		let single = repo_sizes(&root.join("a")).unwrap();
+		fs::remove_dir_all(&root).unwrap();
+		entries.sort();
+		assert_eq!(entries, [("a".into(), 10), ("a.wiki".into(), 5), ("sub/b".into(), 20)]);
+		assert_eq!(single, [("a".into(), 10)]);
+	}
+
+	#[test]
 	fn report_shows_only_total_by_default() {
-		assert_eq!(build_report(entries(), SizeFormat::Raw, false), "400 bytes");
+		assert_eq!(build_report(entries(), "account", SizeFormat::Raw, false), "400 bytes");
 	}
 
 	#[test]
 	fn report_breakdown_lists_accounts_largest_first_under_a_header() {
 		assert_eq!(
-			build_report(entries(), SizeFormat::Raw, true),
+			build_report(entries(), "account", SizeFormat::Raw, true),
 			"Per-account sizes:\nalice  300 bytes\nbob    100 bytes\n\nTotal: 400 bytes"
 		);
 	}

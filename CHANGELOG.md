@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `gitkeep size` (`du`) can measure one account, as in `gitkeep du someone`, and `--breakdown` then lists the size of each of its repos
 - Added `gitkeep add --wikis` to archive the wikis of an account's repos, or of single repos, beside each repo as `<repo>.wiki`
 - Syncs now report repos that a tracked account no longer has upstream, such as deleted or newly private ones, once, and keep their local copies
 - `gitkeep sync` (and the clone after `add`) now exits with an error when any repo fails, so scheduled runs can notice

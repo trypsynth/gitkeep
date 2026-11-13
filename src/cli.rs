@@ -42,13 +42,15 @@ pub enum Commands {
 	/// Show all tracked accounts and repos
 	#[command(alias = "ls")]
 	List,
-	/// Show the on-disk size of the archive
+	/// Show the on-disk size of the archive, or of one account
 	#[command(alias = "du")]
 	Size {
+		/// Account to measure instead of the whole archive; with --breakdown, lists its repos
+		account: Option<String>,
 		/// Size unit format to display
 		#[arg(short = 's', long, value_enum, default_value = "binary")]
 		format: SizeFormat,
-		/// Also show the size of each account
+		/// Also show the size of each account, or each repo when an account is given
 		#[arg(short, long)]
 		breakdown: bool,
 	},

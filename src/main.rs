@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 		Commands::Freeze { users } => track::set_frozen(&users, true),
 		Commands::Unfreeze { users } => track::set_frozen(&users, false),
 		Commands::List => track::list(),
-		Commands::Size { format, breakdown } => size::run(format, breakdown),
+		Commands::Size { account, format, breakdown } => size::run(account.as_deref(), format, breakdown),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose, jobs } => {
 			let verbosity = if quiet {
 				sync::Verbosity::Quiet
