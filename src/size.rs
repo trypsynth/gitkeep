@@ -113,12 +113,11 @@ fn build_report(mut entries: Vec<(String, u64)>, label: &str, format: SizeFormat
 		return total;
 	}
 	entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-	let width = entries.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
 	let mut out = format!("Per-{label} sizes:\n");
 	for (name, size) in &entries {
-		let _ = writeln!(out, "{name:width$}  {}", format_size(*size, format));
+		let _ = writeln!(out, "{name}: {}", format_size(*size, format));
 	}
-	let _ = write!(out, "\nTotal: {total}");
+	let _ = write!(out, "Total: {total}");
 	out
 }
 
@@ -207,7 +206,7 @@ mod tests {
 	fn report_breakdown_lists_accounts_largest_first_under_a_header() {
 		assert_eq!(
 			build_report(entries(), "account", SizeFormat::Raw, true),
-			"Per-account sizes:\nalice  300 bytes\nbob    100 bytes\n\nTotal: 400 bytes"
+			"Per-account sizes:\nalice: 300 bytes\nbob: 100 bytes\nTotal: 400 bytes"
 		);
 	}
 
