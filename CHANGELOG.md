@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `gitkeep prune` to delete, after asking, the local copies of repos nothing tracked lists any more, such as ones deleted upstream or removed from a tracked account
 - Added `gitkeep add --gists` to also archive a GitHub account's gists, including your own secret ones when logged in
 - Added `gitkeep add --stars` to also archive the repos a GitHub account has starred
 - `gitkeep size` (`du`) can measure one account, as in `gitkeep du someone`, and `--breakdown` then lists the size of each of its repos

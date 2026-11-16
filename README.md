@@ -108,6 +108,9 @@ Show the total on-disk size of the archive, or of one account when you name it, 
 | `-s, --format <FORMAT>` | Unit format: `decimal` (kB/MB/GB, base 1000), `binary` (KiB/MiB/GiB, base 1024, default), or `raw` (exact byte count) |
 | `-b, --breakdown` | Also list each account's size, largest first, or each repo's when an account is named |
 
+### `prune`
+Delete the local copies of repos that nothing tracked lists any more: repos deleted or made private upstream, repos removed from a tracked account, unstarred repos, and leftovers from accounts you stopped tracking. Everything tracked is listed from its forge first, frozen accounts included, without cloning or pulling anything. The repos to delete are then shown with their sizes, and nothing is deleted until you confirm. If anything can't be listed, nothing is pruned, since its repos would look untracked. Pass `-y, --yes` to skip the prompt. Any repo folder in the archive counts, so a repo you cloned there by hand would be listed too.
+
 ### `remove <TARGET>...`  _(alias: `rm`)_
 Stop tracking one or more users, orgs, or repos. Accepts either a plain username/org or `user/repo`. A `user/repo` target can be an individually pinned repo or a single repo under a fully tracked account; the latter is left out of future syncs while the rest of the account keeps syncing (run `gitkeep add user/repo` to undo). Like `add`, it accepts `user/a,b,c` to name several repos from one owner. GitLab projects work the same way as `host/namespace/project` (or the URL), including removing one project from a tracked group. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
 

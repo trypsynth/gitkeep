@@ -10,6 +10,7 @@ mod config;
 mod forge;
 mod init;
 mod login;
+mod prune;
 mod size;
 mod sync;
 mod track;
@@ -62,6 +63,7 @@ async fn main() -> Result<()> {
 		Commands::Freeze { users } => track::set_frozen(&users, true),
 		Commands::Unfreeze { users } => track::set_frozen(&users, false),
 		Commands::List => track::list(),
+		Commands::Prune { yes } => prune::run(yes).await,
 		Commands::Size { account, format, breakdown } => size::run(account.as_deref(), format, breakdown),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose, jobs } => {
 			let verbosity = if quiet {

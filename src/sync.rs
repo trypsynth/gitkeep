@@ -149,16 +149,46 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 	fs::create_dir_all(&archive_dir)
 		.with_context(|| format!("Could not create archive directory: {}", archive_dir.display()))?;
 	let mut state = State::load()?;
-	let mut config_changed = migrate_legacy_skipped(config, &mut state);
 	let mut totals = Totals::default();
 	let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
-	let mut forges: HashMap<Option<String>, Result<Forge>> = HashMap::new();
-	let mut seen = HashSet::new();
 	let parallel = opts.jobs.or(config.jobs).unwrap_or_else(default_jobs).max(1);
 	// Verbose mode streams git's own output, which would interleave unreadably in parallel.
 	let jobs = if verbosity == Verbosity::Verbose { 1 } else { parallel };
-	let mut tasks = Vec::new();
 	let ctx = SyncContext { archive_dir: &archive_dir, opts, verbosity, jobs };
+	let (plan, config_changed) = plan_items(config, items, ctx, parallel, &mut sync_state).await;
+	plan.run(ctx, &mut sync_state);
+	state.save().context("Could not save sync state")?;
+	if config_changed {
+		config.save().context("Could not save config")?;
+	}
+	if verbosity == Verbosity::Normal
+		&& let Some(detail) = build_normal_detail(&totals)
+	{
+		println!("{detail}");
+		println!();
+	}
+	println!("{}", build_summary(&totals));
+	// Exiting non-zero lets a scheduled sync tell whoever runs it that something went wrong.
+	if totals.failed > 0 {
+		bail!("{} could not be synced", plural(totals.failed, "repo", "repos"));
+	}
+	Ok(())
+}
+
+/// Lists every item from its forge and plans what each of its repos needs, following renames and
+/// reporting repos gone upstream on the way. `parallel` is how many listings to fetch at once.
+/// Returns the plan and whether the config changed.
+async fn plan_items(
+	config: &mut Config,
+	items: &[Item],
+	ctx: SyncContext<'_>,
+	parallel: usize,
+	sync_state: &mut SyncState<'_>,
+) -> (Plan, bool) {
+	let mut config_changed = migrate_legacy_skipped(config, sync_state.state);
+	let mut forges: HashMap<Option<String>, Result<Forge>> = HashMap::new();
+	let mut seen = HashSet::new();
+	let mut tasks = Vec::new();
 	for item in items {
 		let (host, display) = match item {
 			Item::Account(user) => (user.host.clone(), user.display_name()),
@@ -181,29 +211,51 @@ async fn sync_all(config: &mut Config, items: &[Item], opts: SyncOptions, verbos
 	let mut plan = Plan::default();
 	for fetched in fetch_all(&forges, tasks, parallel).await {
 		config_changed |= match fetched {
-			Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, &mut sync_state, &mut plan),
+			Fetched::Account(user, repos) => sync_one(user, repos, ctx, config, sync_state, &mut plan),
 			Fetched::Pin { full_name, stored_id, repo } => {
-				sync_one_pinned(full_name, stored_id, repo, ctx, config, &mut sync_state, &mut plan)
+				sync_one_pinned(full_name, stored_id, repo, ctx, config, sync_state, &mut plan)
 			}
 		};
 	}
-	plan.run(ctx, &mut sync_state);
+	(plan, config_changed)
+}
+
+/// The archive paths of every repo and wiki that's tracked, frozen accounts included, as a sync
+/// would list them. Renames are followed and saved, as a sync would. Fails if anything couldn't be
+/// listed, since a repo missing from the list would look untracked.
+pub async fn kept_repos() -> Result<HashSet<String>> {
+	let mut config = Config::load().context("Could not load config")?;
+	let archive_dir = config.archive_dir()?;
+	let items: Vec<Item> = config
+		.track
+		.iter()
+		.map(|u| Item::Account(u.clone()))
+		.chain(
+			config
+				.pinned
+				.iter()
+				.filter(|p| !config.track.iter().any(|u| u.covers(&p.full_name)))
+				.map(|p| Item::Pin(p.full_name.clone())),
+		)
+		.collect();
+	let mut state = State::load()?;
+	let mut totals = Totals::default();
+	let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
+	let parallel = config.jobs.unwrap_or_else(default_jobs).max(1);
+	let ctx =
+		SyncContext { archive_dir: &archive_dir, opts: SyncOptions::default(), verbosity: Verbosity::Normal, jobs: 1 };
+	let (plan, config_changed) = plan_items(&mut config, &items, ctx, parallel, &mut sync_state).await;
 	state.save().context("Could not save sync state")?;
 	if config_changed {
 		config.save().context("Could not save config")?;
 	}
-	if verbosity == Verbosity::Normal
-		&& let Some(detail) = build_normal_detail(&totals)
-	{
-		println!("{detail}");
-		println!();
-	}
-	println!("{}", build_summary(&totals));
-	// Exiting non-zero lets a scheduled sync tell whoever runs it that something went wrong.
 	if totals.failed > 0 {
-		bail!("{} could not be synced", plural(totals.failed, "repo", "repos"));
+		bail!(
+			"{} could not be listed, so nothing was pruned",
+			plural(totals.failed, "account or repo", "accounts or repos")
+		);
 	}
-	Ok(())
+	Ok(plan.into_kept())
 }
 
 /// Moves repos removed by versions that kept them in the sync state into the config. Returns `true`

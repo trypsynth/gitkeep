@@ -42,6 +42,12 @@ pub enum Commands {
 	/// Show all tracked accounts and repos
 	#[command(alias = "ls")]
 	List,
+	/// Delete local copies of repos that nothing tracked lists any more, after asking
+	Prune {
+		/// Delete without asking
+		#[arg(short, long)]
+		yes: bool,
+	},
 	/// Show the on-disk size of the archive, or of one account
 	#[command(alias = "du")]
 	Size {

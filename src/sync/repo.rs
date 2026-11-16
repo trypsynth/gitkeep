@@ -72,6 +72,9 @@ pub struct Plan {
 	/// Archive paths already planned, so a repo listed by two tracked accounts (a GitLab group and
 	/// one of its subgroups) isn't cloned twice at once.
 	planned: HashSet<String>,
+	/// Archive paths, relative to the archive, of every repo and wiki the sync wants to keep, whether
+	/// or not it needs a clone or pull this time.
+	kept: HashSet<String>,
 }
 
 impl Plan {
@@ -92,6 +95,7 @@ impl Plan {
 				sync_state.totals.excluded += 1;
 				continue;
 			}
+			self.kept.insert(repo.rel_dir.clone());
 			let use_ssh = config.use_ssh_for(full_name);
 			let Some(url) = repo.clone_url(use_ssh) else {
 				let (missing, other) = if use_ssh { ("SSH", "HTTPS") } else { ("HTTPS", "SSH") };
@@ -106,6 +110,7 @@ impl Plan {
 			// Wiki edits don't move the repo's push time, so the wiki is planned even when the repo
 			// itself is skipped as unchanged.
 			if wanted.wikis && repo.has_wiki {
+				self.kept.insert(format!("{}.wiki", repo.rel_dir));
 				self.add_wiki(full_name, &url, &repo_dir, ctx);
 			}
 			let already_cloned = repo_dir.exists();
@@ -116,9 +121,6 @@ impl Plan {
 			let kind = if already_cloned {
 				let stored = sync_state.state.repos.get(full_name);
 				if stored.and_then(|s| s.id).zip(repo.id).is_some_and(|(stored_id, id)| stored_id != id) {
-					if ctx.verbosity != Verbosity::Quiet {
-						println!("  {full_name} was recreated as a different repository, re-cloning...");
-					}
 					JobKind::Reclone
 				} else if should_skip_pull(repo.pushed_at, stored.and_then(|s| s.pushed_at)) {
 					sync_state.totals.pulled_up_to_date += 1;
@@ -171,6 +173,10 @@ impl Plan {
 		});
 	}
 
+	pub fn into_kept(self) -> HashSet<String> {
+		self.kept
+	}
+
 	/// Runs every planned job, up to `ctx.jobs` at once, then records the results in plan order.
 	pub fn run(self, ctx: SyncContext<'_>, sync_state: &mut SyncState<'_>) {
 		let outcomes = run_jobs(&self.jobs, ctx.jobs, ctx.verbosity);
@@ -206,7 +212,12 @@ fn run_job(job: &Job, verbosity: Verbosity) -> Outcome {
 			}
 			clone(job, verbosity)
 		}
-		JobKind::Reclone => reclone(job, verbosity),
+		JobKind::Reclone => {
+			if verbosity != Verbosity::Quiet {
+				println!("  {} was recreated as a different repository, re-cloning...", job.full_name);
+			}
+			reclone(job, verbosity)
+		}
 		JobKind::Pull => {
 			if verbosity == Verbosity::Verbose {
 				println!("Pulling {}...", job.full_name);

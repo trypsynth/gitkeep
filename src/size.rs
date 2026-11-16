@@ -59,22 +59,28 @@ fn account_key(config: &Config, arg: &str) -> String {
 		.map_or_else(|| target.key(), TrackedAccount::display_name)
 }
 
-/// Measures each repo (each folder with a `.git` in it) under `dir`, named by its path inside it. A
-/// repo folder itself is measured as one entry named after the folder.
+/// Measures each repo under `dir`, named by its path inside it. A repo folder itself is measured as
+/// one entry named after the folder.
 fn repo_sizes(dir: &Path) -> Result<Vec<(String, u64)>> {
 	if dir.join(".git").exists() {
 		let name = dir.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
 		return Ok(vec![(name, dir_size(dir)?)]);
 	}
-	let mut entries = Vec::new();
+	repo_dirs(dir)?.into_iter().map(|(name, path)| Ok((name, dir_size(&path)?))).collect()
+}
+
+/// Every repo (each folder with a `.git` in it) below `dir`, named by its path inside it with `/`
+/// between folders. Repos inside a repo, such as submodules, aren't listed separately.
+pub fn repo_dirs(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+	let mut repos = Vec::new();
 	for (name, path) in subdirs(dir)? {
 		if path.join(".git").exists() {
-			entries.push((name, dir_size(&path)?));
+			repos.push((name, path));
 		} else {
-			entries.extend(repo_sizes(&path)?.into_iter().map(|(sub, size)| (format!("{name}/{sub}"), size)));
+			repos.extend(repo_dirs(&path)?.into_iter().map(|(sub, path)| (format!("{name}/{sub}"), path)));
 		}
 	}
-	Ok(entries)
+	Ok(repos)
 }
 
 /// Measures each account directory in the archive. Archives from forges other than GitHub sit under
@@ -123,7 +129,7 @@ fn build_report(mut entries: Vec<(String, u64)>, label: &str, format: SizeFormat
 
 /// Sums the apparent size of every regular file under `path`. Symlinks aren't followed, so
 /// symlink cycles can't loop forever.
-fn dir_size(path: &Path) -> Result<u64> {
+pub fn dir_size(path: &Path) -> Result<u64> {
 	let mut total = 0u64;
 	for entry in fs::read_dir(path).with_context(|| format!("Could not read directory {}", path.display()))? {
 		let entry = entry?;
@@ -137,7 +143,7 @@ fn dir_size(path: &Path) -> Result<u64> {
 	Ok(total)
 }
 
-fn format_size(bytes: u64, format: SizeFormat) -> String {
+pub fn format_size(bytes: u64, format: SizeFormat) -> String {
 	match format {
 		SizeFormat::Raw => format!("{bytes} bytes"),
 		SizeFormat::Decimal => format_with_units(bytes, 1000.0, &["B", "kB", "MB", "GB", "TB", "PB"]),
