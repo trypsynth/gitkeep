@@ -1,9 +1,9 @@
 use std::collections::{HashMap, hash_map::Entry};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::{
-	config::{Config, HostConfig, TrackedAccount},
+	config::{AccountOptions, Config, HostConfig, TrackedAccount},
 	forge::{self, Forge, ForgeKind, Gitolite, Resolved, Target},
 	utils::confirm,
 };
@@ -21,13 +21,7 @@ pub enum AddedItem {
 /// Adds accounts and repos from any forge. Each target is a GitHub name (`owner` or
 /// `owner/repo`), a host-qualified name (`host/path`), a URL, or an SSH alias and path
 /// (`alias:path`). The first time a host is seen, its forge kind is detected and recorded.
-pub async fn add(
-	targets: &[String],
-	forks: bool,
-	frozen: bool,
-	wikis: bool,
-	submodules: Option<bool>,
-) -> Result<Vec<AddedItem>> {
+pub async fn add(targets: &[String], opts: AccountOptions) -> Result<Vec<AddedItem>> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let mut forges: HashMap<Option<String>, Forge> = HashMap::new();
@@ -39,14 +33,18 @@ pub async fn add(
 			Entry::Occupied(e) => e.into_mut(),
 			Entry::Vacant(e) => e.insert(config.forge(target.host.as_deref())?),
 		};
-		resolved.push((target.host, forge.resolve(&target.path).await?));
+		let item = forge.resolve(&target.path).await?;
+		if opts.stars && target.host.is_some() && matches!(item, Resolved::Account(_)) {
+			bail!("Starred repos can only be archived for GitHub accounts, and {} isn't one.", target.key());
+		}
+		resolved.push((target.host, item));
 	}
 	let mut added = Vec::new();
 	for (host, item) in resolved {
 		match item {
 			Resolved::Account(name) => {
-				changed |= config.add_account(host.as_deref(), &name, forks, frozen, wikis, submodules);
-				let tracked = TrackedAccount { host, ..TrackedAccount::with_options(&name, forks, frozen) };
+				changed |= config.add_account(host.as_deref(), &name, opts);
+				let tracked = TrackedAccount { host, ..TrackedAccount::with_options(&name, opts.forks, opts.frozen) };
 				// A repo given earlier in the same command is dropped here too, so it isn't synced twice.
 				for pin in config.remove_pins_covered(&tracked) {
 					println!("{pin} removed (now covered by {}).", tracked.display_name());
@@ -69,7 +67,7 @@ pub async fn add(
 						println!("{owner} is already fully tracked; {key} will be synced automatically.");
 					}
 				} else if let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name.eq_ignore_ascii_case(&key)) {
-					if wikis && !pin.wikis {
+					if opts.wikis && !pin.wikis {
 						pin.wikis = true;
 						println!("Wikis enabled for {key}.");
 						changed = true;
@@ -80,9 +78,9 @@ pub async fn add(
 				} else {
 					// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
 					config.include_repo(&key);
-					config.pin_repo_with_options(&key, repo.id, submodules);
+					config.pin_repo_with_options(&key, repo.id, opts.submodules);
 					if let Some(pin) = config.pinned.iter_mut().find(|p| p.full_name == key) {
-						pin.wikis = wikis;
+						pin.wikis = opts.wikis;
 					}
 					println!("Now tracking {key}.");
 					added.push(AddedItem::Pin(key));

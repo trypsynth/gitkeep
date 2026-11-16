@@ -69,6 +69,7 @@ Gitolite servers have no web API, so they're added through an SSH alias from you
 |------|-------------|
 | `--forks` | Include forked repositories for these accounts |
 | `--wikis` | Also archive the wikis of these accounts' repos (or these repos), beside each as `<repo>.wiki`. Forges report whether a wiki is turned on rather than whether it has pages, so repos with an empty one are tried and skipped quietly each sync |
+| `--stars` | Also archive the repos these GitHub accounts have starred, stored under each repo's own owner as `owner/repo`. Starred forks are included even without `--forks` |
 | `--frozen` | Track the account but never update it during bulk syncs (see `freeze`) |
 | `--submodules` | Clone submodules for these accounts/repos, overriding the global default |
 | `--no-submodules` | Never clone submodules for these accounts/repos, overriding the global default |

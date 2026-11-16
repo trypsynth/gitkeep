@@ -43,7 +43,7 @@ pub async fn fetch_all<'a>(
 		.map(|task| async move {
 			match task {
 				Task::Account(user) => {
-					Fetched::Account(user, forge(user.host.as_deref()).account(&user.name, user.id).await)
+					Fetched::Account(user, forge(user.host.as_deref()).account(&user.name, user.id, user.stars).await)
 				}
 				Task::Pin { full_name, stored_id } => {
 					let (host, path) = split_host(full_name).map_or((None, full_name), |(h, p)| (Some(h), p));
@@ -114,6 +114,8 @@ pub fn sync_one(
 	report_gone(&current, &account.repos, ctx, sync_state);
 	let wanted = Wanted { forks: include_forks, wikis: user.wikis, submodules: use_submodules };
 	plan.add(account.repos, wanted, ctx, config, sync_state);
+	// Starring a fork is choosing it, so starred forks are kept whatever the account's setting.
+	plan.add(account.starred, Wanted { forks: true, ..wanted }, ctx, config, sync_state);
 	config_changed
 }
 

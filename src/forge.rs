@@ -56,6 +56,8 @@ pub struct AccountRepos {
 	pub name: String,
 	pub id: Option<u64>,
 	pub repos: Vec<RemoteRepo>,
+	/// Repos the account has starred, when they were asked for. They belong to other owners.
+	pub starred: Vec<RemoteRepo>,
 }
 
 /// Forge-neutral details for one remote repository. `full_name` is its key in the config and
@@ -102,10 +104,11 @@ impl Forge {
 		}
 	}
 
-	/// Lists a tracked account's repos. `id` is the account's stored id, used to follow renames.
-	pub async fn account(&self, name: &str, id: Option<u64>) -> Result<AccountRepos> {
+	/// Lists a tracked account's repos, and with `stars` the ones it starred. `id` is the account's
+	/// stored id, used to follow renames.
+	pub async fn account(&self, name: &str, id: Option<u64>, stars: bool) -> Result<AccountRepos> {
 		match self {
-			Self::GitHub(f) => f.account(name, id).await,
+			Self::GitHub(f) => f.account(name, id, stars).await,
 			Self::GitLab(f) => f.account(name).await,
 			Self::Forgejo(f) => f.account(name).await,
 			Self::Gitolite(f) => f.account(name).await,

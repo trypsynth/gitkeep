@@ -99,7 +99,7 @@ impl Forgejo {
 			}
 			repos.extend(batch.iter().map(|r| self.remote_repo(r)));
 		}
-		Ok(AccountRepos { name, id, repos })
+		Ok(AccountRepos { name, id, repos, starred: Vec::new() })
 	}
 
 	/// Fetches one repo by `owner/repo`, which Forgejo resolves across renames. The stored `id` is a

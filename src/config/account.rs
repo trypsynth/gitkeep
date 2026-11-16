@@ -24,6 +24,7 @@ pub struct HostConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TrackedAccount {
 	pub name: String,
 	#[serde(default, skip_serializing_if = "is_false")]
@@ -32,6 +33,9 @@ pub struct TrackedAccount {
 	pub frozen: bool,
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub wikis: bool,
+	/// Also archive the repos this account has starred, under their owners. GitHub only.
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub stars: bool,
 	/// Stable account id on its forge, used to follow renames.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
@@ -45,7 +49,7 @@ pub struct TrackedAccount {
 
 impl TrackedAccount {
 	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
-		Self { name: name.into(), forks, frozen, wikis: false, id: None, submodules: None, host: None }
+		Self { name: name.into(), forks, frozen, wikis: false, stars: false, id: None, submodules: None, host: None }
 	}
 
 	pub fn display_name(&self) -> String {
@@ -70,6 +74,19 @@ impl TrackedAccount {
 			_ => false,
 		}
 	}
+}
+
+/// What `add` turns on for an account. Flags only ever turn things on, so adding an account again
+/// without one leaves an earlier choice alone.
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AccountOptions {
+	pub forks: bool,
+	pub frozen: bool,
+	pub wikis: bool,
+	pub stars: bool,
+	/// Overrides the global `submodules` default. `None` leaves the account's setting alone.
+	pub submodules: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]

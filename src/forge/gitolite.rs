@@ -39,7 +39,7 @@ impl Gitolite {
 
 	pub async fn account(&self, name: &str) -> Result<AccountRepos> {
 		let repos = self.repos().await?.iter().filter(|r| is_under(r, name)).map(|r| self.remote_repo(r)).collect();
-		Ok(AccountRepos { name: name.to_string(), id: None, repos })
+		Ok(AccountRepos { name: name.to_string(), id: None, repos, starred: Vec::new() })
 	}
 
 	pub async fn repo(&self, path: &str) -> Result<Option<RemoteRepo>> {

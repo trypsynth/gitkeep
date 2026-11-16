@@ -17,7 +17,7 @@ mod utils;
 
 use crate::{
 	cli::{AddArgs, Cli, Commands},
-	config::Config,
+	config::{AccountOptions, Config},
 };
 
 async fn run_add(args: AddArgs) -> Result<()> {
@@ -36,7 +36,14 @@ async fn run_add(args: AddArgs) -> Result<()> {
 		Config::load()?.no_sync
 	};
 	let targets = utils::expand_targets(args.users)?;
-	let added = track::add(&targets, args.forks, args.frozen, args.wikis, submodules_override).await?;
+	let opts = AccountOptions {
+		forks: args.forks,
+		frozen: args.frozen,
+		wikis: args.wikis,
+		stars: args.stars,
+		submodules: submodules_override,
+	};
+	let added = track::add(&targets, opts).await?;
 	if no_sync {
 		return Ok(());
 	}

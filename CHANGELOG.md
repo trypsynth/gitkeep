@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `gitkeep add --stars` to also archive the repos a GitHub account has starred
 - `gitkeep size` (`du`) can measure one account, as in `gitkeep du someone`, and `--breakdown` then lists the size of each of its repos
 - `--breakdown` now prints one `name: size` line per entry, without column padding or a blank line before the total
 - Added `gitkeep add --wikis` to archive the wikis of an account's repos, or of single repos, beside each repo as `<repo>.wiki`

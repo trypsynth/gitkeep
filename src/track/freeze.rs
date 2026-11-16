@@ -56,7 +56,7 @@ fn set_one(config: &mut Config, target: &Target, frozen: bool) -> Option<bool> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::config::TrackedAccount;
+	use crate::config::{AccountOptions, TrackedAccount};
 
 	fn set(config: &mut Config, target: &str, frozen: bool) -> Option<bool> {
 		set_one(config, &Target::parse(target), frozen)
@@ -65,7 +65,7 @@ mod tests {
 	#[test]
 	fn freeze_and_unfreeze_ignore_case() {
 		let mut config = Config::default();
-		config.add_account(None, "Alice", false, false, false, None);
+		config.add_account(None, "Alice", AccountOptions::default());
 		assert_eq!(set(&mut config, "alice", true), Some(true));
 		assert!(config.track[0].frozen);
 		assert_eq!(set(&mut config, "ALICE", true), Some(false));
@@ -76,7 +76,7 @@ mod tests {
 	#[test]
 	fn freeze_matches_host_and_gitlab_subgroup() {
 		let mut config = Config::default();
-		config.add_account(None, "grp", false, false, false, None);
+		config.add_account(None, "grp", AccountOptions::default());
 		config.track.push(TrackedAccount {
 			host: Some("gitlab.example.com".to_string()),
 			..TrackedAccount::with_options("grp/sub", false, false)
@@ -89,7 +89,7 @@ mod tests {
 	#[test]
 	fn freeze_rejects_repos_and_untracked_names() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, None);
+		config.add_account(None, "alice", AccountOptions::default());
 		config.pin_repo_with_options("bob/repo", None, None);
 		assert_eq!(set(&mut config, "alice/repo", true), None);
 		assert_eq!(set(&mut config, "bob/repo", true), None);

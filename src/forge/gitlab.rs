@@ -81,7 +81,7 @@ impl GitLab {
 			self.paged(&format!("/api/v4/users/{name}/projects")).await?
 		};
 		let repos = projects.iter().map(|p| self.remote_repo(p)).collect();
-		Ok(AccountRepos { name: name.to_string(), id: None, repos })
+		Ok(AccountRepos { name: name.to_string(), id: None, repos, starred: Vec::new() })
 	}
 
 	pub async fn repo(&self, path: &str) -> Result<Option<RemoteRepo>> {

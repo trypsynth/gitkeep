@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, bail};
-use octocrab::{Octocrab, models::Repository};
+use octocrab::{Octocrab, Page, models::Repository};
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
@@ -49,9 +49,10 @@ impl GitHub {
 		}
 	}
 
-	/// Lists an account's repos. If the name no longer resolves, the stored `id` is tried, since it
-	/// still finds the account after any number of renames; the returned name is the current login.
-	pub async fn account(&self, name: &str, id: Option<u64>) -> Result<AccountRepos> {
+	/// Lists an account's repos, and with `stars` the repos it starred. If the name no longer
+	/// resolves, the stored `id` is tried, since it still finds the account after any number of
+	/// renames; the returned name is the current login.
+	pub async fn account(&self, name: &str, id: Option<u64>, stars: bool) -> Result<AccountRepos> {
 		let mut account = self.client.get::<AccountInfo, _, _>(format!("/users/{name}"), None::<&()>).await.ok();
 		if account.is_none()
 			&& let Some(id) = id
@@ -65,7 +66,29 @@ impl GitHub {
 			(false, true) => self.fetch_with_token(&login).await?,
 			(_, false) => self.fetch_public(&login).await?.iter().map(|r| remote_repo(r, &login)).collect(),
 		};
-		Ok(AccountRepos { name: login, id: account.map(|a| a.id), repos })
+		let starred = if stars { self.fetch_starred(&login).await? } else { Vec::new() };
+		Ok(AccountRepos { name: login, id: account.map(|a| a.id), repos, starred })
+	}
+
+	/// The repos `username` has starred, each stored under its own owner.
+	async fn fetch_starred(&self, username: &str) -> Result<Vec<RemoteRepo>> {
+		let page: Page<Repository> = self
+			.client
+			.get(format!("/users/{username}/starred"), Some(&[("per_page", 100)]))
+			.await
+			.with_context(|| format!("Could not fetch the repositories {username} starred"))?;
+		let repos = self
+			.client
+			.all_pages(page)
+			.await
+			.with_context(|| format!("Could not retrieve all starred repository pages for {username}"))?;
+		Ok(repos
+			.iter()
+			.map(|r| {
+				let owner = r.owner.as_ref().map_or_else(|| username.to_string(), |o| o.login.clone());
+				remote_repo(r, &owner)
+			})
+			.collect())
 	}
 
 	/// Fetches one repo by `owner/repo`, falling back to its stable `id` if it or its owner was
@@ -224,7 +247,7 @@ mod tests {
 		let (url, hits) = mock_github();
 		let client = OctocrabBuilder::default().base_uri(url).unwrap().build().unwrap();
 		let github = GitHub::new(client, true);
-		let (alice, bob) = tokio::join!(github.account("alice", None), github.account("bob", None));
+		let (alice, bob) = tokio::join!(github.account("alice", None, false), github.account("bob", None, false));
 		let names = |repos: &[RemoteRepo]| repos.iter().map(|r| r.full_name.clone()).collect::<Vec<_>>();
 		assert_eq!(names(&alice.unwrap().repos), ["alice/private"], "the public and accessible copies merge");
 		assert_eq!(names(&bob.unwrap().repos), ["bob/shared"]);

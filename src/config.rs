@@ -15,7 +15,7 @@ mod account;
 mod state;
 
 pub use self::{
-	account::{HostConfig, PinnedRepo, TrackedAccount},
+	account::{AccountOptions, HostConfig, PinnedRepo, TrackedAccount},
 	state::State,
 };
 use crate::{
@@ -171,62 +171,55 @@ impl Config {
 		}
 	}
 
-	pub fn add_account(
-		&mut self,
-		host: Option<&str>,
-		user: &str,
-		forks: bool,
-		frozen: bool,
-		wikis: bool,
-		submodules: Option<bool>,
-	) -> bool {
+	pub fn add_account(&mut self, host: Option<&str>, user: &str, opts: AccountOptions) -> bool {
 		let display = display_name(host, user);
 		let changed = if let Some(entry) =
 			self.track.iter_mut().find(|u| u.name.eq_ignore_ascii_case(user) && u.host.as_deref() == host)
 		{
-			let canonical_changed = if entry.name == user {
-				false
-			} else {
+			let canonical_changed = entry.name != user;
+			if canonical_changed {
 				entry.name = user.to_string();
-				true
-			};
-			let enable_forks = forks && !entry.forks;
-			let freeze = frozen && !entry.frozen;
-			if enable_forks {
-				entry.forks = true;
-				println!("Forks enabled for {display}.");
 			}
-			if freeze {
-				entry.frozen = true;
-				println!("Account frozen for {display}. Updates will be skipped.");
+			let mut local_changed = false;
+			for (wanted, flag, message) in [
+				(opts.forks, &mut entry.forks, "Forks enabled for"),
+				(opts.frozen, &mut entry.frozen, "Account frozen for"),
+				(opts.wikis, &mut entry.wikis, "Wikis enabled for"),
+				(opts.stars, &mut entry.stars, "Starred repos enabled for"),
+			] {
+				if wanted && !*flag {
+					*flag = true;
+					local_changed = true;
+					println!("{message} {display}.");
+				}
 			}
-			let enable_wikis = wikis && !entry.wikis;
-			if enable_wikis {
-				entry.wikis = true;
-				println!("Wikis enabled for {display}.");
-			}
-			let set_submodules = submodules.filter(|&s| entry.submodules != Some(s));
-			if let Some(submodules) = set_submodules {
+			if let Some(submodules) = opts.submodules.filter(|&s| entry.submodules != Some(s)) {
 				entry.submodules = Some(submodules);
+				local_changed = true;
 				println!("Submodules {} for {display}.", if submodules { "enabled" } else { "disabled" });
 			}
-			let local_changed = enable_forks || freeze || enable_wikis || set_submodules.is_some();
 			if !local_changed && !canonical_changed {
 				println!("Already tracking {display}.");
 			}
 			local_changed || canonical_changed
 		} else {
-			let mut entry = TrackedAccount::with_options(user, forks, frozen);
-			entry.wikis = wikis;
-			entry.submodules = submodules;
-			entry.host = host.map(ToString::to_string);
-			println!(
-				"Now tracking {}{}{}{}.",
-				display,
-				if forks { " (forks included)" } else { "" },
-				if wikis { " (wikis included)" } else { "" },
-				if frozen { " (frozen)" } else { "" }
-			);
+			let entry = TrackedAccount {
+				wikis: opts.wikis,
+				stars: opts.stars,
+				submodules: opts.submodules,
+				host: host.map(ToString::to_string),
+				..TrackedAccount::with_options(user, opts.forks, opts.frozen)
+			};
+			let notes: String = [
+				(opts.forks, " (forks included)"),
+				(opts.wikis, " (wikis included)"),
+				(opts.stars, " (starred repos included)"),
+				(opts.frozen, " (frozen)"),
+			]
+			.into_iter()
+			.filter_map(|(on, note)| on.then_some(note))
+			.collect();
+			println!("Now tracking {display}{notes}.");
 			self.track.push(entry);
 			true
 		};
@@ -447,22 +440,23 @@ mod tests {
 	#[test]
 	fn add_account_sets_submodules_override_on_new_entry() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, Some(true));
+		config.add_account(None, "alice", AccountOptions { submodules: Some(true), ..AccountOptions::default() });
 		assert_eq!(config.track[0].submodules, Some(true));
 	}
 
 	#[test]
 	fn add_account_leaves_submodules_unset_when_not_specified() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, None);
+		config.add_account(None, "alice", AccountOptions::default());
 		assert_eq!(config.track[0].submodules, None);
 	}
 
 	#[test]
 	fn add_account_updates_submodules_override_on_existing_entry() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, None);
-		let changed = config.add_account(None, "alice", false, false, false, Some(false));
+		config.add_account(None, "alice", AccountOptions::default());
+		let changed =
+			config.add_account(None, "alice", AccountOptions { submodules: Some(false), ..AccountOptions::default() });
 		assert!(changed);
 		assert_eq!(config.track[0].submodules, Some(false));
 	}
@@ -470,16 +464,17 @@ mod tests {
 	#[test]
 	fn add_account_without_frozen_keeps_existing_entry_frozen() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, true, false, None);
-		config.add_account(None, "alice", false, false, false, Some(true));
+		config.add_account(None, "alice", AccountOptions { frozen: true, ..AccountOptions::default() });
+		config.add_account(None, "alice", AccountOptions { submodules: Some(true), ..AccountOptions::default() });
 		assert!(config.track[0].frozen);
 	}
 
 	#[test]
 	fn add_account_no_change_when_submodules_override_already_set() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, Some(true));
-		let changed = config.add_account(None, "alice", false, false, false, Some(true));
+		config.add_account(None, "alice", AccountOptions { submodules: Some(true), ..AccountOptions::default() });
+		let changed =
+			config.add_account(None, "alice", AccountOptions { submodules: Some(true), ..AccountOptions::default() });
 		assert!(!changed);
 	}
 
@@ -612,7 +607,7 @@ mod tests {
 	#[test]
 	fn config_without_gitlab_omits_new_fields_on_save() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, None);
+		config.add_account(None, "alice", AccountOptions::default());
 		let raw = to_string(&config).unwrap();
 		assert!(!raw.contains("gitlab_tokens"), "got: {raw}");
 		assert!(!raw.contains("host"), "got: {raw}");
@@ -639,7 +634,7 @@ mod tests {
 	#[test]
 	fn legacy_host_qualified_entries_are_assumed_gitlab() {
 		let mut config = Config::default();
-		config.add_account(Some("git.example.org"), "grp", false, false, false, None);
+		config.add_account(Some("git.example.org"), "grp", AccountOptions::default());
 		config.pin_repo_with_options("code.example.net/team/proj", None, None);
 		config.migrate_legacy_hosts();
 		assert_eq!(config.hosts["git.example.org"].kind, ForgeKind::GitLab);
@@ -654,7 +649,7 @@ mod tests {
 			"git.example.org".to_string(),
 			HostConfig { kind: ForgeKind::GitLab, token: Some("t".into()), use_ssh: None, ssh_alias: None },
 		);
-		config.add_account(Some("git.example.org"), "grp", false, false, false, None);
+		config.add_account(Some("git.example.org"), "grp", AccountOptions::default());
 		config.migrate_legacy_hosts();
 		assert_eq!(config.hosts["git.example.org"].token.as_deref(), Some("t"));
 	}
@@ -702,16 +697,16 @@ mod tests {
 	#[test]
 	fn add_account_on_tracks_same_name_on_different_hosts_separately() {
 		let mut config = Config::default();
-		config.add_account(None, "alice", false, false, false, None);
-		assert!(config.add_account(Some("gitlab.example.com"), "alice", false, false, false, None));
+		config.add_account(None, "alice", AccountOptions::default());
+		assert!(config.add_account(Some("gitlab.example.com"), "alice", AccountOptions::default()));
 		assert_eq!(config.track.len(), 2);
 	}
 
 	#[test]
 	fn add_account_on_is_idempotent_per_host() {
 		let mut config = Config::default();
-		config.add_account(Some("gitlab.example.com"), "alice", false, false, false, None);
-		assert!(!config.add_account(Some("gitlab.example.com"), "alice", false, false, false, None));
+		config.add_account(Some("gitlab.example.com"), "alice", AccountOptions::default());
+		assert!(!config.add_account(Some("gitlab.example.com"), "alice", AccountOptions::default()));
 	}
 
 	#[test]
@@ -740,7 +735,7 @@ mod tests {
 		config.pin_repo_with_options("alice/foo", None, None);
 		config.pin_repo_with_options("alice/bar", None, None);
 		config.pin_repo_with_options("bob/baz", None, None);
-		config.add_account(None, "alice", false, false, false, None);
+		config.add_account(None, "alice", AccountOptions::default());
 		let pins_removed = config.remove_pins_covered(&TrackedAccount::with_options("alice", false, false));
 		assert_eq!(pins_removed.len(), 2);
 		assert!(config.is_pinned("bob/baz"));

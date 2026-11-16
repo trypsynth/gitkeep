@@ -3,7 +3,7 @@ use octocrab::OctocrabBuilder;
 use open::that as open_in_browser;
 
 use crate::{
-	config::Config,
+	config::{AccountOptions, Config},
 	utils::{ask, confirm},
 };
 
@@ -30,7 +30,7 @@ pub async fn run() -> Result<()> {
 	config.token = Some(token);
 	let already_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(&user.login));
 	if already_tracked || confirm(&format!("Track your own account ({})?", user.login), true)? {
-		config.add_account(None, &user.login, false, false, false, None);
+		config.add_account(None, &user.login, AccountOptions::default());
 	}
 	config.save()?;
 	println!("Token saved to {}.", Config::path()?.display());

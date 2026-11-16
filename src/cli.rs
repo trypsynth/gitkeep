@@ -95,6 +95,9 @@ pub struct AddArgs {
 	/// Also archive these accounts'/repos' wikis, beside each repo as `<repo>.wiki`
 	#[arg(long)]
 	pub wikis: bool,
+	/// Also archive the repos these GitHub accounts have starred, under their owners
+	#[arg(long)]
+	pub stars: bool,
 	/// Do not update these accounts in bulk runs after the initial clone (same as `freeze`)
 	#[arg(long)]
 	pub frozen: bool,
