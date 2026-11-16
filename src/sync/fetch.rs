@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
 	config::{Config, TrackedAccount},
-	forge::{AccountRepos, Forge, RemoteRepo, archive_path, split_host},
+	forge::{AccountRepos, Extras, Forge, RemoteRepo, archive_path, split_host},
 	utils::plural,
 };
 
@@ -42,9 +42,12 @@ pub async fn fetch_all<'a>(
 	stream::iter(tasks)
 		.map(|task| async move {
 			match task {
-				Task::Account(user) => {
-					Fetched::Account(user, forge(user.host.as_deref()).account(&user.name, user.id, user.stars).await)
-				}
+				Task::Account(user) => Fetched::Account(
+					user,
+					forge(user.host.as_deref())
+						.account(&user.name, user.id, Extras { stars: user.stars, gists: user.gists })
+						.await,
+				),
 				Task::Pin { full_name, stored_id } => {
 					let (host, path) = split_host(full_name).map_or((None, full_name), |(h, p)| (Some(h), p));
 					Fetched::Pin { full_name, stored_id, repo: forge(host).repo(path, stored_id).await }
@@ -116,6 +119,7 @@ pub fn sync_one(
 	plan.add(account.repos, wanted, ctx, config, sync_state);
 	// Starring a fork is choosing it, so starred forks are kept whatever the account's setting.
 	plan.add(account.starred, Wanted { forks: true, ..wanted }, ctx, config, sync_state);
+	plan.add(account.gists, Wanted { forks: true, wikis: false, submodules: false }, ctx, config, sync_state);
 	config_changed
 }
 

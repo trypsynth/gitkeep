@@ -25,6 +25,9 @@ fn format_list(config: &Config) -> String {
 			if user.stars {
 				tags.push("stars");
 			}
+			if user.gists {
+				tags.push("gists");
+			}
 			match user.submodules {
 				Some(true) => tags.push("submodules"),
 				Some(false) => tags.push("no-submodules"),

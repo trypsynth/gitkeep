@@ -36,6 +36,9 @@ pub struct TrackedAccount {
 	/// Also archive the repos this account has starred, under their owners. GitHub only.
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub stars: bool,
+	/// Also archive the account's gists, under `gist.github.com/<account>`. GitHub only.
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub gists: bool,
 	/// Stable account id on its forge, used to follow renames.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub id: Option<u64>,
@@ -49,7 +52,17 @@ pub struct TrackedAccount {
 
 impl TrackedAccount {
 	pub fn with_options(name: impl Into<String>, forks: bool, frozen: bool) -> Self {
-		Self { name: name.into(), forks, frozen, wikis: false, stars: false, id: None, submodules: None, host: None }
+		Self {
+			name: name.into(),
+			forks,
+			frozen,
+			wikis: false,
+			stars: false,
+			gists: false,
+			id: None,
+			submodules: None,
+			host: None,
+		}
 	}
 
 	pub fn display_name(&self) -> String {
@@ -85,6 +98,7 @@ pub struct AccountOptions {
 	pub frozen: bool,
 	pub wikis: bool,
 	pub stars: bool,
+	pub gists: bool,
 	/// Overrides the global `submodules` default. `None` leaves the account's setting alone.
 	pub submodules: Option<bool>,
 }

@@ -41,6 +41,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
 		frozen: args.frozen,
 		wikis: args.wikis,
 		stars: args.stars,
+		gists: args.gists,
 		submodules: submodules_override,
 	};
 	let added = track::add(&targets, opts).await?;

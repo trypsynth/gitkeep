@@ -186,6 +186,7 @@ impl Config {
 				(opts.frozen, &mut entry.frozen, "Account frozen for"),
 				(opts.wikis, &mut entry.wikis, "Wikis enabled for"),
 				(opts.stars, &mut entry.stars, "Starred repos enabled for"),
+				(opts.gists, &mut entry.gists, "Gists enabled for"),
 			] {
 				if wanted && !*flag {
 					*flag = true;
@@ -206,6 +207,7 @@ impl Config {
 			let entry = TrackedAccount {
 				wikis: opts.wikis,
 				stars: opts.stars,
+				gists: opts.gists,
 				submodules: opts.submodules,
 				host: host.map(ToString::to_string),
 				..TrackedAccount::with_options(user, opts.forks, opts.frozen)
@@ -214,6 +216,7 @@ impl Config {
 				(opts.forks, " (forks included)"),
 				(opts.wikis, " (wikis included)"),
 				(opts.stars, " (starred repos included)"),
+				(opts.gists, " (gists included)"),
 				(opts.frozen, " (frozen)"),
 			]
 			.into_iter()

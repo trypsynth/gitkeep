@@ -1,11 +1,24 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use octocrab::{Octocrab, Page, models::Repository};
 use serde::Deserialize;
 use tokio::sync::OnceCell;
 
-use super::{AccountRepos, RemoteRepo, Resolved};
+use super::{AccountRepos, Extras, RemoteRepo, Resolved};
+
+#[derive(Deserialize)]
+struct Gist {
+	id: String,
+	updated_at: Option<DateTime<Utc>>,
+	owner: Option<GistOwner>,
+}
+
+#[derive(Deserialize)]
+struct GistOwner {
+	login: String,
+}
 
 #[derive(Deserialize)]
 struct AccountInfo {
@@ -49,10 +62,10 @@ impl GitHub {
 		}
 	}
 
-	/// Lists an account's repos, and with `stars` the repos it starred. If the name no longer
-	/// resolves, the stored `id` is tried, since it still finds the account after any number of
-	/// renames; the returned name is the current login.
-	pub async fn account(&self, name: &str, id: Option<u64>, stars: bool) -> Result<AccountRepos> {
+	/// Lists an account's repos, plus the repos it starred and its gists if `extras` asks. If the
+	/// name no longer resolves, the stored `id` is tried, since it still finds the account after any
+	/// number of renames; the returned name is the current login.
+	pub async fn account(&self, name: &str, id: Option<u64>, extras: Extras) -> Result<AccountRepos> {
 		let mut account = self.client.get::<AccountInfo, _, _>(format!("/users/{name}"), None::<&()>).await.ok();
 		if account.is_none()
 			&& let Some(id) = id
@@ -66,8 +79,32 @@ impl GitHub {
 			(false, true) => self.fetch_with_token(&login).await?,
 			(_, false) => self.fetch_public(&login).await?.iter().map(|r| remote_repo(r, &login)).collect(),
 		};
-		let starred = if stars { self.fetch_starred(&login).await? } else { Vec::new() };
-		Ok(AccountRepos { name: login, id: account.map(|a| a.id), repos, starred })
+		let starred = if extras.stars { self.fetch_starred(&login).await? } else { Vec::new() };
+		let gists = if extras.gists { self.fetch_gists(&login).await? } else { Vec::new() };
+		Ok(AccountRepos { name: login, id: account.map(|a| a.id), repos, starred, gists })
+	}
+
+	/// `username`'s gists. With a token, `/gists` also has the token owner's secret ones, which the
+	/// public listing leaves out, so both are fetched and merged when the token belongs to them.
+	async fn fetch_gists(&self, username: &str) -> Result<Vec<RemoteRepo>> {
+		let mut gists = self.all_gists(&format!("/users/{username}/gists"), username).await?;
+		if self.authenticated {
+			let seen: HashSet<String> = gists.iter().map(|g| g.id.clone()).collect();
+			let own = self.all_gists("/gists", username).await?.into_iter().filter(|g| {
+				g.owner.as_ref().is_some_and(|o| o.login.eq_ignore_ascii_case(username)) && !seen.contains(&g.id)
+			});
+			gists.extend(own);
+		}
+		Ok(gists.iter().map(|g| gist_repo(g, username)).collect())
+	}
+
+	async fn all_gists(&self, route: &str, username: &str) -> Result<Vec<Gist>> {
+		let page: Page<Gist> = self
+			.client
+			.get(route, Some(&[("per_page", 100)]))
+			.await
+			.with_context(|| format!("Could not fetch the gists of {username}"))?;
+		self.client.all_pages(page).await.with_context(|| format!("Could not retrieve all gist pages for {username}"))
 	}
 
 	/// The repos `username` has starred, each stored under its own owner.
@@ -177,6 +214,22 @@ fn remote_repo(repo: &Repository, owner: &str) -> RemoteRepo {
 	}
 }
 
+/// A gist as a repo, stored as `gist.github.com/<owner>/<id>`, since gists have no other name that
+/// stays put.
+fn gist_repo(gist: &Gist, owner: &str) -> RemoteRepo {
+	let full_name = format!("gist.github.com/{owner}/{}", gist.id);
+	RemoteRepo {
+		rel_dir: full_name.clone(),
+		full_name,
+		id: None,
+		pushed_at: gist.updated_at,
+		fork: false,
+		has_wiki: false,
+		clone_url: Some(format!("https://gist.github.com/{}.git", gist.id)),
+		ssh_url: Some(format!("git@gist.github.com:{}.git", gist.id)),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::{
@@ -247,7 +300,10 @@ mod tests {
 		let (url, hits) = mock_github();
 		let client = OctocrabBuilder::default().base_uri(url).unwrap().build().unwrap();
 		let github = GitHub::new(client, true);
-		let (alice, bob) = tokio::join!(github.account("alice", None, false), github.account("bob", None, false));
+		let (alice, bob) = tokio::join!(
+			github.account("alice", None, Extras::default()),
+			github.account("bob", None, Extras::default())
+		);
 		let names = |repos: &[RemoteRepo]| repos.iter().map(|r| r.full_name.clone()).collect::<Vec<_>>();
 		assert_eq!(names(&alice.unwrap().repos), ["alice/private"], "the public and accessible copies merge");
 		assert_eq!(names(&bob.unwrap().repos), ["bob/shared"]);

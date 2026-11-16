@@ -50,6 +50,13 @@ pub enum Resolved {
 	Repo(RemoteRepo),
 }
 
+/// What to list for an account besides its own repos. Only GitHub has either.
+#[derive(Clone, Copy, Default)]
+pub struct Extras {
+	pub stars: bool,
+	pub gists: bool,
+}
+
 /// An account's repos, along with its current name and stable id (when the forge has one), so
 /// renames can be followed.
 pub struct AccountRepos {
@@ -58,6 +65,8 @@ pub struct AccountRepos {
 	pub repos: Vec<RemoteRepo>,
 	/// Repos the account has starred, when they were asked for. They belong to other owners.
 	pub starred: Vec<RemoteRepo>,
+	/// The account's gists, when they were asked for.
+	pub gists: Vec<RemoteRepo>,
 }
 
 /// Forge-neutral details for one remote repository. `full_name` is its key in the config and
@@ -104,11 +113,11 @@ impl Forge {
 		}
 	}
 
-	/// Lists a tracked account's repos, and with `stars` the ones it starred. `id` is the account's
-	/// stored id, used to follow renames.
-	pub async fn account(&self, name: &str, id: Option<u64>, stars: bool) -> Result<AccountRepos> {
+	/// Lists a tracked account's repos, plus its starred repos and gists if `extras` asks for them.
+	/// `id` is the account's stored id, used to follow renames.
+	pub async fn account(&self, name: &str, id: Option<u64>, extras: Extras) -> Result<AccountRepos> {
 		match self {
-			Self::GitHub(f) => f.account(name, id, stars).await,
+			Self::GitHub(f) => f.account(name, id, extras).await,
 			Self::GitLab(f) => f.account(name).await,
 			Self::Forgejo(f) => f.account(name).await,
 			Self::Gitolite(f) => f.account(name).await,

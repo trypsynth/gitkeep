@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `gitkeep add --gists` to also archive a GitHub account's gists, including your own secret ones when logged in
 - Added `gitkeep add --stars` to also archive the repos a GitHub account has starred
 - `gitkeep size` (`du`) can measure one account, as in `gitkeep du someone`, and `--breakdown` then lists the size of each of its repos
 - `--breakdown` now prints one `name: size` line per entry, without column padding or a blank line before the total

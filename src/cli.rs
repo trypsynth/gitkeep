@@ -98,6 +98,9 @@ pub struct AddArgs {
 	/// Also archive the repos these GitHub accounts have starred, under their owners
 	#[arg(long)]
 	pub stars: bool,
+	/// Also archive these GitHub accounts' gists, under `gist.github.com/<account>`
+	#[arg(long)]
+	pub gists: bool,
 	/// Do not update these accounts in bulk runs after the initial clone (same as `freeze`)
 	#[arg(long)]
 	pub frozen: bool,

@@ -34,8 +34,8 @@ pub async fn add(targets: &[String], opts: AccountOptions) -> Result<Vec<AddedIt
 			Entry::Vacant(e) => e.insert(config.forge(target.host.as_deref())?),
 		};
 		let item = forge.resolve(&target.path).await?;
-		if opts.stars && target.host.is_some() && matches!(item, Resolved::Account(_)) {
-			bail!("Starred repos can only be archived for GitHub accounts, and {} isn't one.", target.key());
+		if (opts.stars || opts.gists) && target.host.is_some() && matches!(item, Resolved::Account(_)) {
+			bail!("Starred repos and gists can only be archived for GitHub accounts, and {} isn't one.", target.key());
 		}
 		resolved.push((target.host, item));
 	}
