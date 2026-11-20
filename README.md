@@ -69,8 +69,8 @@ Gitolite servers have no web API, so they're added through an SSH alias from you
 |------|-------------|
 | `--forks` | Include forked repositories for these accounts |
 | `--wikis` | Also archive the wikis of these accounts' repos (or these repos), beside each as `<repo>.wiki`. Forges report whether a wiki is turned on rather than whether it has pages, so repos with an empty one are tried and skipped quietly each sync |
-| `--stars` | Also archive the repos these GitHub accounts have starred, stored under each repo's own owner as `owner/repo`. Starred forks are included even without `--forks` |
-| `--gists` | Also archive these GitHub accounts' gists, as `gist.github.com/<account>/<gist id>`. With a token, your own secret gists are included |
+| `--stars` | Also archive the repos these GitHub accounts have starred, stored under each repo's own owner as `owner/repo`. Starred forks are included even without `--forks`. To stop archiving one, unstar it; `remove` can't, since the next sync would clone it again |
+| `--gists` | Also archive these GitHub accounts' gists, as `gist.github.com/<account>/<gist id>`. With a token, your own secret gists are included. To stop archiving one, delete the gist |
 | `--frozen` | Track the account but never update it during bulk syncs (see `freeze`) |
 | `--submodules` | Clone submodules for these accounts/repos, overriding the global default |
 | `--no-submodules` | Never clone submodules for these accounts/repos, overriding the global default |

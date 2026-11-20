@@ -108,7 +108,7 @@ impl GitHub {
 	}
 
 	/// The repos `username` has starred, each stored under its own owner.
-	async fn fetch_starred(&self, username: &str) -> Result<Vec<RemoteRepo>> {
+	pub async fn fetch_starred(&self, username: &str) -> Result<Vec<RemoteRepo>> {
 		let page: Page<Repository> = self
 			.client
 			.get(format!("/users/{username}/starred"), Some(&[("per_page", 100)]))

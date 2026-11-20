@@ -7,7 +7,7 @@ use anyhow::Result;
 
 use crate::{
 	config::{Config, TrackedAccount},
-	forge::{Target, archive_path},
+	forge::{Target, archive_path, split_host},
 	utils::{Answer, confirm_each},
 };
 
@@ -73,7 +73,34 @@ async fn remove_one(
 	if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).cloned() {
 		return exclude_repo(config, archive_root, &owner, target, deletion).await;
 	}
+	if let Some((reason, fix)) = archived_through_account(config, &key).await? {
+		println!(
+			"{key} {reason}, so removing it here wouldn't stop the next sync cloning it again. {fix} on GitHub to stop archiving it; 'gitkeep prune' then deletes the local copy."
+		);
+		return Ok(false);
+	}
 	remove_untracked(config, archive_root, &key, target, deletion)
+}
+
+/// Why `key` is archived even though it isn't tracked itself, and what stops that: it's a gist of
+/// an account tracked with `--gists`, or a repo that an account tracked with `--stars` starred.
+/// Starred repos are looked up on GitHub, since only it knows what's starred.
+async fn archived_through_account(config: &Config, key: &str) -> Result<Option<(String, &'static str)>> {
+	if let Some((owner, _)) = key.strip_prefix("gist.github.com/").and_then(|rest| rest.split_once('/')) {
+		let account = config.track.iter().find(|u| u.gists && u.host.is_none() && u.name.eq_ignore_ascii_case(owner));
+		return Ok(account.map(|u| (format!("is one of {}'s gists", u.name), "Delete the gist")));
+	}
+	let stargazers: Vec<&TrackedAccount> = config.track.iter().filter(|u| u.stars && u.host.is_none()).collect();
+	if stargazers.is_empty() || split_host(key).is_some() || !key.contains('/') {
+		return Ok(None);
+	}
+	let forge = config.forge(None)?;
+	for account in stargazers {
+		if forge.starred(&account.name).await?.iter().any(|r| r.full_name.eq_ignore_ascii_case(key)) {
+			return Ok(Some((format!("is archived because {} starred it", account.name), "Unstar it")));
+		}
+	}
+	Ok(None)
 }
 
 /// Splits a key into the archive directory that holds it and its last path segment.
@@ -250,6 +277,19 @@ mod tests {
 	/// Removes `target`, deleting any local archive, since prompts can't be answered in tests.
 	async fn remove(config: &mut Config, root: &Path, target: &str) -> bool {
 		remove_one(config, root, &Target::parse(target), &mut Deletion { always: true }).await.unwrap()
+	}
+
+	#[tokio::test]
+	async fn removing_a_gist_of_an_account_tracked_with_gists_keeps_it() {
+		let root = temp_dir();
+		let gist = root.join("gist.github.com").join("alice").join("abc123");
+		fs::create_dir_all(&gist).unwrap();
+		let mut config = Config::default();
+		config.add_account(None, "Alice", AccountOptions { gists: true, ..AccountOptions::default() });
+		assert!(!remove(&mut config, &root, "gist.github.com/alice/abc123").await);
+		let kept = gist.exists();
+		fs::remove_dir_all(&root).unwrap();
+		assert!(kept, "the next sync would only clone it again");
 	}
 
 	#[tokio::test]

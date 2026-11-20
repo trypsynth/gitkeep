@@ -125,6 +125,14 @@ impl Forge {
 		}
 	}
 
+	/// The repos `name` has starred. Only GitHub has stars, so elsewhere there are none.
+	pub async fn starred(&self, name: &str) -> Result<Vec<RemoteRepo>> {
+		match self {
+			Self::GitHub(f) => f.fetch_starred(name).await,
+			_ => Ok(Vec::new()),
+		}
+	}
+
 	/// Fetches one repo by its path on the forge. `id` is its stored id, used to follow renames.
 	pub async fn repo(&self, path: &str, id: Option<u64>) -> Result<Option<RemoteRepo>> {
 		match self {
