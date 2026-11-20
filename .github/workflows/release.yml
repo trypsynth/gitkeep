@@ -21,6 +21,8 @@ jobs:
             os: ubuntu-24.04
           - target: aarch64-pc-windows-gnullvm
             os: ubuntu-24.04
+            # Since Rust 1.100, linking through zig no longer pulls in libunwind for this target.
+            rustflags: -C link-arg=-lunwind
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -51,6 +53,8 @@ jobs:
       - name: Build (cross)
         if: runner.os != 'macOS'
         run: cargo zigbuild --release --locked --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
       - name: Build (native)
         if: runner.os == 'macOS'
         run: cargo build --release --locked --target ${{ matrix.target }}
