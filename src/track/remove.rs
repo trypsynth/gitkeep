@@ -118,6 +118,10 @@ fn remove_untracked(
 	target: &Target,
 	deletion: &mut Deletion,
 ) -> Result<bool> {
+	if target.path.is_empty() && config.track.iter().any(|u| u.host == target.host) {
+		println!("Accounts on {key} are still tracked, so its archive is left alone. Remove them by name first.");
+		return Ok(false);
+	}
 	let as_account =
 		TrackedAccount { host: target.host.clone(), ..TrackedAccount::with_options(&target.path, false, false) };
 	if !config.pinned.iter().any(|p| as_account.covers(&p.full_name)) {
@@ -277,6 +281,19 @@ mod tests {
 	/// Removes `target`, deleting any local archive, since prompts can't be answered in tests.
 	async fn remove(config: &mut Config, root: &Path, target: &str) -> bool {
 		remove_one(config, root, &Target::parse(target), &mut Deletion { always: true }).await.unwrap()
+	}
+
+	#[tokio::test]
+	async fn removing_a_host_with_tracked_accounts_on_it_keeps_its_archive() {
+		let root = temp_dir();
+		let group = root.join("gitlab.example.com").join("grp").join("proj");
+		fs::create_dir_all(&group).unwrap();
+		let mut config = Config::default();
+		config.track.push(gitlab_account("grp"));
+		assert!(!remove(&mut config, &root, "gitlab.example.com").await);
+		let kept = group.exists();
+		fs::remove_dir_all(&root).unwrap();
+		assert!(kept && config.track.len() == 1);
 	}
 
 	#[tokio::test]
