@@ -155,6 +155,14 @@ pub async fn detect(host: &str) -> Result<ForgeKind> {
 	if Forgejo::detect(&http).await {
 		return Ok(ForgeKind::Forgejo);
 	}
+	// The kind is recorded for good, so a forge that's only having a bad moment mustn't be taken
+	// for plain git.
+	for path in ["/api/v4/version", "/api/v1/version"] {
+		let status = http.status(path).await?;
+		if status >= 500 || status == 429 {
+			bail!("{host} answered HTTP {status}, so gitkeep couldn't tell which forge it runs. Try again later.");
+		}
+	}
 	Ok(ForgeKind::Git)
 }
 
@@ -178,10 +186,14 @@ impl Target {
 			let host = (host != "github.com").then_some(host);
 			return Self { host, path, ssh_alias: None };
 		}
-		// GitHub names and host names never contain a colon, so this can't be mistaken for either.
+		// GitHub names never contain a colon, and a host's only appears before a port, as in
+		// `host:8443/grp`, so this can't be mistaken for either.
 		if let Some((alias, path)) = arg.split_once(':')
 			&& !alias.is_empty()
 			&& !alias.contains('/')
+			&& !path
+				.split_once('/')
+				.is_some_and(|(port, _)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
 		{
 			let path = path.trim_matches('/');
 			let path = path.strip_suffix(".git").unwrap_or(path).to_string();
@@ -281,6 +293,19 @@ mod tests {
 		assert_eq!(wiki_url("https://github.com/a/b.git"), "https://github.com/a/b.wiki.git");
 		assert_eq!(wiki_url("git@github.com:a/b.git"), "git@github.com:a/b.wiki.git");
 		assert_eq!(wiki_url("https://codeberg.org/a/b"), "https://codeberg.org/a/b.wiki.git");
+	}
+
+	#[test]
+	fn a_host_with_a_port_is_not_an_ssh_alias() {
+		let target = Target::parse("git.example.com:8443/grp");
+		assert_eq!(target.host.as_deref(), Some("git.example.com:8443"));
+		assert_eq!(target.path, "grp");
+		assert!(target.ssh_alias.is_none());
+		assert_eq!(
+			Target::parse("box:8443").ssh_alias.as_deref(),
+			Some("box"),
+			"a repo named like a port is still a repo"
+		);
 	}
 
 	#[test]

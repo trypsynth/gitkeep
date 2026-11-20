@@ -1,6 +1,10 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+	collections::{HashMap, hash_map::Entry},
+	time::Duration,
+};
 
 use anyhow::{Result, bail};
+use tokio::time;
 
 use crate::{
 	config::{AccountOptions, Config, HostConfig, TrackedAccount},
@@ -114,13 +118,25 @@ async fn register_host(config: &mut Config, target: &mut Target) -> Result<bool>
 			}
 			return Ok(new_alias);
 		}
+		if Gitolite::detect(&alias).await {
+			let ssh_alias = (alias != host).then_some(alias);
+			config.hosts.insert(host, HostConfig { kind: ForgeKind::Gitolite, token: None, use_ssh: None, ssh_alias });
+			return Ok(true);
+		}
+		// A forge's API still lists its repos, so it's cloned over SSH from the URLs the API gives,
+		// as an SSH target asks. A host reached only over SSH may have no HTTPS at all, or one that
+		// never answers, so a failed or slow probe means plain git rather than an error.
+		let probe = time::timeout(Duration::from_secs(10), forge::detect(&host)).await;
+		if let Ok(Ok(kind @ (ForgeKind::GitLab | ForgeKind::Forgejo))) = probe {
+			let use_ssh = (!config.use_ssh).then_some(true);
+			let ssh_alias = (alias != host).then_some(alias);
+			config.hosts.insert(host, HostConfig { kind, token: None, use_ssh, ssh_alias });
+			return Ok(true);
+		}
 		// A plain git host is cloned over SSH only because it has an alias, so it always keeps one.
-		let (kind, ssh_alias) = if Gitolite::detect(&alias).await {
-			(ForgeKind::Gitolite, (alias != host).then_some(alias))
-		} else {
-			(ForgeKind::Git, Some(alias))
-		};
-		config.hosts.insert(host, HostConfig { kind, token: None, use_ssh: None, ssh_alias });
+		config
+			.hosts
+			.insert(host, HostConfig { kind: ForgeKind::Git, token: None, use_ssh: None, ssh_alias: Some(alias) });
 		return Ok(true);
 	}
 	let kind = forge::detect(&host).await?;
