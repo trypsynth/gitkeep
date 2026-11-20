@@ -75,9 +75,51 @@ pub fn ask(message: &str, default: Option<&str>) -> Result<String> {
 /// terminal to read a key from, as in a script, it answers with `default`.
 pub fn confirm(message: &str, default: bool) -> Result<bool> {
 	let hint = if default { "[Y/n]" } else { "[y/N]" };
+	let label = |yes: bool| if yes { "Yes" } else { "No" };
+	prompt(message, hint, default, label, |code| match code {
+		KeyCode::Char('y' | 'Y') => Some(true),
+		KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
+		KeyCode::Enter => Some(default),
+		_ => None,
+	})
+}
+
+/// An answer to a prompt that's asked once per item, which can also cover every item after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+	Yes,
+	No,
+	/// Yes to this and to the same question for the rest of the command.
+	All,
+}
+
+/// Like `confirm` with a default of no, but 'a' answers yes to this and every later item.
+pub fn confirm_each(message: &str) -> Result<Answer> {
+	let label = |answer| match answer {
+		Answer::Yes => "Yes",
+		Answer::No => "No",
+		Answer::All => "Yes to all",
+	};
+	prompt(message, "[y/N/a]", Answer::No, label, |code| match code {
+		KeyCode::Char('y' | 'Y') => Some(Answer::Yes),
+		KeyCode::Char('n' | 'N') | KeyCode::Esc | KeyCode::Enter => Some(Answer::No),
+		KeyCode::Char('a' | 'A') => Some(Answer::All),
+		_ => None,
+	})
+}
+
+/// Prints `message` and `hint`, then waits for a key that `pick` maps to an answer, echoing it with
+/// `label`. Without a terminal it answers `default`.
+fn prompt<T: Copy>(
+	message: &str,
+	hint: &str,
+	default: T,
+	label: impl Fn(T) -> &'static str,
+	pick: impl Fn(KeyCode) -> Option<T>,
+) -> Result<T> {
 	print!("{message} {hint} ");
 	if !io::stdin().is_terminal() {
-		println!("{}", if default { "Yes" } else { "No" });
+		println!("{}", label(default));
 		return Ok(default);
 	}
 	io::stdout().flush().context("Could not flush stdout")?;
@@ -88,14 +130,11 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 				if key.kind == KeyEventKind::Release {
 					continue;
 				}
-				match key.code {
-					KeyCode::Char('y' | 'Y') => break Ok(true),
-					KeyCode::Char('n' | 'N') | KeyCode::Esc => break Ok(false),
-					KeyCode::Enter => break Ok(default),
-					KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-						break Err(anyhow::anyhow!("Interrupted by user"));
-					}
-					_ => {}
+				if key.code == KeyCode::Char('c') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+					break Err(anyhow::anyhow!("Interrupted by user"));
+				}
+				if let Some(answer) = pick(key.code) {
+					break Ok(answer);
 				}
 			}
 			Ok(_) => {}
@@ -104,9 +143,9 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 	};
 	disable_raw_mode().ok();
 	match result {
-		Ok(val) => {
-			println!("{}", if val { "Yes" } else { "No" });
-			Ok(val)
+		Ok(answer) => {
+			println!("{}", label(answer));
+			Ok(answer)
 		}
 		Err(e) => {
 			println!();

@@ -8,17 +8,35 @@ use anyhow::Result;
 use crate::{
 	config::{Config, TrackedAccount},
 	forge::{Target, archive_path},
-	utils::confirm,
+	utils::{Answer, confirm_each},
 };
+
+/// Whether to delete local archives, asked per archive until `-d`, `-y` or an "all" answer says
+/// to delete the rest without asking.
+struct Deletion {
+	always: bool,
+}
+
+impl Deletion {
+	fn ask(&mut self, message: &str) -> Result<bool> {
+		if self.always {
+			return Ok(true);
+		}
+		let answer = confirm_each(message)?;
+		self.always = answer == Answer::All;
+		Ok(answer != Answer::No)
+	}
+}
 
 /// Stops tracking accounts or repos on any forge, offering to delete their local copies.
 pub async fn remove(targets: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let archive_root = config.archive_dir()?;
 	let mut changed = false;
+	let mut deletion = Deletion { always: delete_dir || yes };
 	for arg in targets {
 		let target = config.target(arg);
-		changed |= remove_one(&mut config, &archive_root, &target, delete_dir, yes).await?;
+		changed |= remove_one(&mut config, &archive_root, &target, &mut deletion).await?;
 	}
 	if changed {
 		config.save()?;
@@ -32,8 +50,7 @@ async fn remove_one(
 	config: &mut Config,
 	archive_root: &Path,
 	target: &Target,
-	delete_dir: bool,
-	yes: bool,
+	deletion: &mut Deletion,
 ) -> Result<bool> {
 	let key = target.key();
 	let host = target.host.as_deref();
@@ -43,20 +60,20 @@ async fn remove_one(
 		config.remove_exclusions_covered(&account);
 		let name = account.display_name();
 		let dir = archive_path(archive_root, &name);
-		if dir.exists() && (delete_dir || yes || confirm(&format!("Delete local archive for {name}?"), false)?) {
+		if dir.exists() && deletion.ask(&format!("Delete local archive for {name}?"))? {
 			delete_archive_dir(archive_root, &dir)?;
 		}
 		return Ok(true);
 	}
 	if let Some(pin) = config.unpin_repo(&key) {
 		println!("No longer tracking {pin}.");
-		delete_pinned_dir(archive_root, &pin, delete_dir || yes)?;
+		delete_pinned_dir(archive_root, &pin, deletion)?;
 		return Ok(true);
 	}
 	if let Some(owner) = config.track.iter().find(|u| u.covers(&key)).cloned() {
-		return exclude_repo(config, archive_root, &owner, target, delete_dir || yes).await;
+		return exclude_repo(config, archive_root, &owner, target, deletion).await;
 	}
-	remove_untracked(config, archive_root, &key, target, delete_dir, yes)
+	remove_untracked(config, archive_root, &key, target, deletion)
 }
 
 /// Splits a key into the archive directory that holds it and its last path segment.
@@ -72,8 +89,7 @@ fn remove_untracked(
 	archive_root: &Path,
 	key: &str,
 	target: &Target,
-	delete_dir: bool,
-	yes: bool,
+	deletion: &mut Deletion,
 ) -> Result<bool> {
 	let as_account =
 		TrackedAccount { host: target.host.clone(), ..TrackedAccount::with_options(&target.path, false, false) };
@@ -82,7 +98,7 @@ fn remove_untracked(
 		match find_dir_ignoring_case(&parent, name)? {
 			Some(dir) => {
 				println!("'{key}' is not tracked, but a local archive exists at {}.", dir.display());
-				if delete_dir || yes || confirm("Delete it?", false)? {
+				if deletion.ask("Delete it?")? {
 					delete_archive_dir(archive_root, &dir)?;
 				}
 			}
@@ -92,15 +108,15 @@ fn remove_untracked(
 	}
 	for repo in config.remove_pins_covered(&as_account) {
 		println!("No longer tracking {repo}.");
-		delete_pinned_dir(archive_root, &repo, delete_dir || yes)?;
+		delete_pinned_dir(archive_root, &repo, deletion)?;
 	}
 	Ok(true)
 }
 
-fn delete_pinned_dir(archive_root: &Path, full_name: &str, delete: bool) -> Result<()> {
+fn delete_pinned_dir(archive_root: &Path, full_name: &str, deletion: &mut Deletion) -> Result<()> {
 	let (parent, name) = parent_and_name(archive_root, full_name);
 	let Some(dir) = find_dir_ignoring_case(&parent, name)? else { return Ok(()) };
-	if delete || confirm(&format!("Delete local archive for {full_name}?"), false)? {
+	if deletion.ask(&format!("Delete local archive for {full_name}?"))? {
 		delete_archive_dir(archive_root, &dir)?;
 	}
 	Ok(())
@@ -113,7 +129,7 @@ async fn exclude_repo(
 	archive_root: &Path,
 	owner: &TrackedAccount,
 	target: &Target,
-	delete: bool,
+	deletion: &mut Deletion,
 ) -> Result<bool> {
 	let key = target.key();
 	let Some((parent, name)) = key.rsplit_once('/') else { return Ok(false) };
@@ -139,7 +155,7 @@ async fn exclude_repo(
 			}
 		}
 	};
-	apply_exclusion(config, archive_root, &full_name, local_dir, delete)
+	apply_exclusion(config, archive_root, &full_name, local_dir, deletion)
 }
 
 /// Records `full_name` as excluded and offers to delete its local copy. Returns `true` if the
@@ -149,7 +165,7 @@ fn apply_exclusion(
 	archive_root: &Path,
 	full_name: &str,
 	local_dir: Option<PathBuf>,
-	delete: bool,
+	deletion: &mut Deletion,
 ) -> Result<bool> {
 	let changed = config.exclude_repo(full_name);
 	if changed {
@@ -158,7 +174,7 @@ fn apply_exclusion(
 		println!("Already removed {full_name}.");
 	}
 	if let Some(dir) = local_dir
-		&& (delete || confirm(&format!("Delete local archive for {full_name}?"), false)?)
+		&& deletion.ask(&format!("Delete local archive for {full_name}?"))?
 	{
 		delete_archive_dir(archive_root, &dir)?;
 	}
@@ -231,8 +247,9 @@ mod tests {
 		}
 	}
 
-	async fn remove(config: &mut Config, root: &Path, target: &str, delete_dir: bool) -> bool {
-		remove_one(config, root, &Target::parse(target), delete_dir, true).await.unwrap()
+	/// Removes `target`, deleting any local archive, since prompts can't be answered in tests.
+	async fn remove(config: &mut Config, root: &Path, target: &str) -> bool {
+		remove_one(config, root, &Target::parse(target), &mut Deletion { always: true }).await.unwrap()
 	}
 
 	#[tokio::test]
@@ -241,7 +258,7 @@ mod tests {
 		fs::create_dir_all(root.join("Alice").join("BigRepo")).unwrap();
 		let mut config = Config::default();
 		config.add_account(None, "Alice", AccountOptions::default());
-		assert!(remove(&mut config, &root, "alice/bigrepo", true).await);
+		assert!(remove(&mut config, &root, "alice/bigrepo").await);
 		assert!(config.excluded.contains("Alice/BigRepo"));
 		assert_eq!(config.track.len(), 1, "the account itself stays tracked");
 		assert!(!root.join("Alice").join("BigRepo").exists());
@@ -254,7 +271,7 @@ mod tests {
 		let mut config = Config::default();
 		config.add_account(None, "alice", AccountOptions::default());
 		config.exclude_repo("alice/big");
-		assert!(!remove(&mut config, &root, "alice/big", true).await);
+		assert!(!remove(&mut config, &root, "alice/big").await);
 		assert_eq!(config.excluded.len(), 1);
 		fs::remove_dir_all(&root).unwrap();
 	}
@@ -266,7 +283,7 @@ mod tests {
 		fs::create_dir_all(&project_dir).unwrap();
 		let mut config = Config::default();
 		config.track.push(gitlab_account("grp"));
-		assert!(remove(&mut config, &root, "https://gitlab.example.com/grp/sub/big", true).await);
+		assert!(remove(&mut config, &root, "https://gitlab.example.com/grp/sub/big").await);
 		assert!(config.is_excluded("gitlab.example.com/grp/sub/big"));
 		assert_eq!(config.track.len(), 1, "the group itself stays tracked");
 		assert!(!project_dir.exists());
@@ -281,7 +298,7 @@ mod tests {
 		config.exclude_repo("gitlab.example.com/grp/big");
 		config.exclude_repo("gitlab.example.com/other/big");
 		config.exclude_repo("alice/big");
-		assert!(remove(&mut config, &root, "gitlab.example.com/grp", false).await);
+		assert!(remove(&mut config, &root, "gitlab.example.com/grp").await);
 		assert!(config.track.is_empty());
 		assert!(!config.is_excluded("gitlab.example.com/grp/big"));
 		assert!(config.is_excluded("gitlab.example.com/other/big"));
@@ -295,7 +312,7 @@ mod tests {
 		let mut config = Config::default();
 		config.add_account(None, "alice", AccountOptions::default());
 		config.track.push(gitlab_account("alice"));
-		assert!(remove(&mut config, &root, "alice", false).await);
+		assert!(remove(&mut config, &root, "alice").await);
 		assert_eq!(config.track.len(), 1);
 		assert_eq!(config.track[0].host.as_deref(), Some("gitlab.example.com"));
 		fs::remove_dir_all(&root).unwrap();
@@ -305,7 +322,7 @@ mod tests {
 	async fn remove_ignores_repo_of_untracked_owner() {
 		let root = temp_dir();
 		let mut config = Config::default();
-		assert!(!remove(&mut config, &root, "bob/repo", true).await);
+		assert!(!remove(&mut config, &root, "bob/repo").await);
 		assert!(config.excluded.is_empty());
 		fs::remove_dir_all(&root).unwrap();
 	}
@@ -315,7 +332,7 @@ mod tests {
 		let root = temp_dir();
 		let mut config = Config::default();
 		config.pin_repo_with_options("bob/repo", None, None);
-		assert!(remove(&mut config, &root, "Bob/Repo", false).await);
+		assert!(remove(&mut config, &root, "Bob/Repo").await);
 		assert!(!config.is_pinned("bob/repo"));
 		assert!(config.excluded.is_empty());
 		fs::remove_dir_all(&root).unwrap();
@@ -327,7 +344,7 @@ mod tests {
 		fs::create_dir_all(root.join("rust-lang/mdBook")).unwrap();
 		let mut config = Config::default();
 		config.pin_repo_with_options("rust-lang/mdBook", None, None);
-		assert!(remove(&mut config, &root, "rust-lang/mdbook", false).await);
+		assert!(remove(&mut config, &root, "rust-lang/mdbook").await);
 		assert!(!root.join("rust-lang").exists());
 		fs::remove_dir_all(&root).unwrap();
 	}
@@ -339,7 +356,7 @@ mod tests {
 		fs::create_dir_all(root.join("alice")).unwrap();
 		let mut config = Config::default();
 		config.pin_repo_with_options("gitlab.example.com/grp/sub/proj", None, None);
-		assert!(remove(&mut config, &root, "gitlab.example.com/grp/sub/proj", false).await);
+		assert!(remove(&mut config, &root, "gitlab.example.com/grp/sub/proj").await);
 		assert!(!root.join("gitlab.example.com").exists());
 		assert!(root.join("alice").exists());
 		fs::remove_dir_all(&root).unwrap();
@@ -351,7 +368,7 @@ mod tests {
 		let mut config = Config::default();
 		config.pin_repo_with_options("gitlab.example.com/grp/a", None, None);
 		config.pin_repo_with_options("gitlab.example.com/other/b", None, None);
-		assert!(remove(&mut config, &root, "gitlab.example.com/grp", false).await);
+		assert!(remove(&mut config, &root, "gitlab.example.com/grp").await);
 		assert!(!config.is_pinned("gitlab.example.com/grp/a"));
 		assert!(config.is_pinned("gitlab.example.com/other/b"));
 		fs::remove_dir_all(&root).unwrap();
