@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - `gitkeep remove` now accepts `a` at its delete prompt to delete that archive and every later one in the same command without asking again
 - Added `gitkeep prune` to delete, after asking, the local copies of repos nothing tracked lists any more, such as ones deleted upstream or removed from a tracked account
