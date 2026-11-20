@@ -41,6 +41,8 @@ pub struct SyncOptions {
 	pub new_only: bool,
 	/// How many repos to clone or pull at once, overriding the config.
 	pub jobs: Option<usize>,
+	/// Only listing what's tracked for `prune`, which offers to delete what's gone, rather than syncing.
+	pub pruning: bool,
 }
 
 /// How many repos to clone or pull at once when neither `--jobs` nor the config says: one per CPU
@@ -242,8 +244,12 @@ pub async fn kept_repos() -> Result<HashSet<String>> {
 	let mut totals = Totals::default();
 	let mut sync_state = SyncState { state: &mut state, totals: &mut totals };
 	let parallel = config.jobs.unwrap_or_else(default_jobs).max(1);
-	let ctx =
-		SyncContext { archive_dir: &archive_dir, opts: SyncOptions::default(), verbosity: Verbosity::Normal, jobs: 1 };
+	let ctx = SyncContext {
+		archive_dir: &archive_dir,
+		opts: SyncOptions { pruning: true, ..SyncOptions::default() },
+		verbosity: Verbosity::Normal,
+		jobs: 1,
+	};
 	let (plan, config_changed) = plan_items(&mut config, &items, ctx, parallel, &mut sync_state).await;
 	state.save().context("Could not save sync state")?;
 	if config_changed {

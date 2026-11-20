@@ -73,8 +73,14 @@ async fn main() -> Result<()> {
 			} else {
 				sync::Verbosity::Normal
 			};
-			let opts =
-				sync::SyncOptions { force_forks: forks, force_submodules: submodules, pull_only, new_only, jobs };
+			let opts = sync::SyncOptions {
+				force_forks: forks,
+				force_submodules: submodules,
+				pull_only,
+				new_only,
+				jobs,
+				pruning: false,
+			};
 			sync::run(&utils::expand_targets(users)?, opts, verbosity).await
 		}
 	}

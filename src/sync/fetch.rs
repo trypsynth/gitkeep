@@ -140,7 +140,11 @@ fn report_gone(account: &TrackedAccount, listed: &[RemoteRepo], ctx: SyncContext
 	for key in gone {
 		sync_state.state.repos.remove(&key);
 		if archive_path(ctx.archive_dir, &key).exists() {
-			println!("  {key} is gone upstream. The local copy is kept.");
+			if ctx.opts.pruning {
+				println!("  {key} is gone upstream.");
+			} else {
+				println!("  {key} is gone upstream. The local copy is kept; 'gitkeep prune' deletes it.");
+			}
 			sync_state.totals.gone += 1;
 		}
 	}

@@ -129,13 +129,6 @@ impl Plan {
 					JobKind::Pull
 				}
 			} else {
-				if let Some(parent) = repo_dir.parent()
-					&& let Err(e) = fs::create_dir_all(parent)
-				{
-					eprintln!("  Could not create directory for {full_name}: {e}.");
-					sync_state.totals.failed += 1;
-					continue;
-				}
 				JobKind::Clone
 			};
 			self.jobs.push(Job {
@@ -257,6 +250,12 @@ fn reclone(job: &Job, verbosity: Verbosity) -> Outcome {
 }
 
 fn clone(job: &Job, verbosity: Verbosity) -> Outcome {
+	// Made here rather than when planning, so planning alone, as for `prune`, leaves no empty folders.
+	if let Some(parent) = job.repo_dir.parent()
+		&& let Err(e) = fs::create_dir_all(parent)
+	{
+		return Outcome::Failed(format!("Could not create directory for {}: {e}.", job.full_name));
+	}
 	match git_clone(&job.url, &job.repo_dir, verbosity) {
 		Ok(()) => Outcome::Cloned { warning: submodules(job, verbosity, "clone") },
 		Err(_) if job.wiki => Outcome::NoWiki,
