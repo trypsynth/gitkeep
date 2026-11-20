@@ -47,11 +47,14 @@ pub async fn run(yes: bool) -> Result<()> {
 	Ok(())
 }
 
-/// The repos in the archive that aren't in `kept`, with their paths and sizes, in name order.
+/// The repos in the archive that aren't in `kept`, with their paths and sizes, in name order. Names
+/// are compared ignoring case: on a case-insensitive filesystem a sync keeps using a folder after
+/// its repo's name changes case upstream, so that folder is still the repo's.
 fn untracked(archive_dir: &Path, kept: &HashSet<String>) -> Result<Vec<(String, PathBuf, u64)>> {
+	let kept: HashSet<String> = kept.iter().map(|k| k.to_lowercase()).collect();
 	let mut repos: Vec<(String, PathBuf, u64)> = repo_dirs(archive_dir)?
 		.into_iter()
-		.filter(|(name, _)| !kept.contains(name))
+		.filter(|(name, _)| !kept.contains(&name.to_lowercase()))
 		.map(|(name, path)| {
 			let size = dir_size(&path)?;
 			Ok((name, path, size))
@@ -83,7 +86,7 @@ mod tests {
 		for dir in ["alice/kept", "alice/gone", "bob/old", "host.example.com/grp/sub/proj"] {
 			fs::create_dir_all(root.join(dir).join(".git")).unwrap();
 		}
-		let kept: HashSet<String> = ["alice/kept".to_string()].into();
+		let kept: HashSet<String> = ["Alice/Kept".to_string()].into();
 		let names: Vec<String> = untracked(&root, &kept).unwrap().into_iter().map(|r| r.0).collect();
 		assert_eq!(names, ["alice/gone", "bob/old", "host.example.com/grp/sub/proj"]);
 		let proj = root.join("host.example.com/grp/sub/proj");

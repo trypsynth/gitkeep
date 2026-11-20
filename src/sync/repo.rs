@@ -91,7 +91,15 @@ impl Plan {
 				continue;
 			}
 			let full_name = repo.full_name.as_str();
-			if config.is_excluded(full_name) || (repo.fork && !wanted.forks) {
+			if config.is_excluded(full_name) {
+				sync_state.totals.excluded += 1;
+				continue;
+			}
+			if repo.fork && !wanted.forks {
+				// A fork archived by a one-off `sync --forks` is still the account's, so prune leaves it.
+				if ctx.opts.pruning {
+					self.kept.insert(repo.rel_dir.clone());
+				}
 				sync_state.totals.excluded += 1;
 				continue;
 			}
@@ -164,6 +172,11 @@ impl Plan {
 			submodules: false,
 			wiki: true,
 		});
+	}
+
+	/// Keeps the repo at `rel_dir` without planning anything for it.
+	pub fn keep(&mut self, rel_dir: &str) {
+		self.kept.insert(rel_dir.to_string());
 	}
 
 	pub fn into_kept(self) -> HashSet<String> {

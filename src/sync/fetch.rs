@@ -187,6 +187,15 @@ pub fn sync_one_pinned(
 		resolve_submodules(ctx.opts.force_submodules, config.pinned_submodules(full_name), config.submodules);
 	let repo = match fetched {
 		Ok(Some(repo)) => repo,
+		// Forges can't always tell a deleted repo apart from a failed lookup, so prune keeps the copy
+		// rather than deleting it or refusing to prune anything else.
+		Ok(None) if ctx.opts.pruning => {
+			println!(
+				"  {full_name} couldn't be found upstream. If it's gone, 'gitkeep remove {full_name}' stops tracking it."
+			);
+			plan.keep(full_name);
+			return false;
+		}
 		Ok(None) => {
 			eprintln!("  Could not fetch {full_name}.");
 			sync_state.totals.failed += 1;
