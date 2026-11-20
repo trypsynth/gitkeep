@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added `gitkeep --version` (`-V`)
+- The Windows binaries are now built with MSVC, so their downloads are named `gitkeep-x86_64-pc-windows-msvc.exe` and `gitkeep-aarch64-pc-windows-msvc.exe`
+
 ## 0.5.0
 
 - `gitkeep remove` now accepts `a` at its delete prompt to delete that archive and every later one in the same command without asking again

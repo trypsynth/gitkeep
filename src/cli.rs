@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::size::SizeFormat;
 
 #[derive(Parser)]
-#[command(name = "gitkeep", about)]
+#[command(name = "gitkeep", about, version)]
 pub struct Cli {
 	#[command(subcommand)]
 	pub command: Commands,
